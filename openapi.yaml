@@ -1,0 +1,475 @@
+openapi: 3.1.0
+
+info:
+  title: Sewain API
+  version: 0.1.0
+  description: |
+    Fase 1 — Rental & sewa.
+
+    **Berkas ini sengaja belum lengkap.** Ia memuat konvensi dari `04-api-spec.md` §2 yang
+    dipakai setiap endpoint — autentikasi, envelope error, paginasi, rate limit — plus
+    permukaan auth yang sudah dibangun, dan tidak lebih.
+
+    Path ditambahkan oleh item backlog yang memilikinya: `S1-082` `/auth/register`,
+    `S1-084` `/auth/verify-email` + `/auth/verify-email/resend`, `S1-009` `/settings`,
+    `S1-010` `/users`, `S1-016` resources, `S1-024` ketersediaan, `S1-030` booking,
+    dan seterusnya.
+    Menambahkan semuanya di muka mendahului keputusan desain yang justru jadi isi item-item
+    itu. `S1-008` menambahkan empat path auth di bawah.
+
+    Jadi berkas ini **kurang** dibanding `04-api-spec.md` §3–§8, bukan **bertentangan**
+    dengannya. Aturan di `CLAUDE.md` tetap berlaku untuk apa pun yang dijelaskan dua-duanya:
+    ubah satu, ubah yang lain, di commit yang sama.
+
+    **Tiga endpoint jalur gateway sengaja tidak ada di sini** dan tetap begitu selama fase 1
+    (`04-api-spec.md` §3.8.1): `POST /invoices/{id}/payment-link`,
+    `POST /portal/bookings/{token}/payment-link`, `POST /webhooks/payments/{provider}`.
+    Tidak terdaftar berarti tidak ada method-nya di kode generated, dan hasilnya `404` —
+    bukan `503`. Endpoint yang ada tapi selalu gagal akan digenerate lalu dipanggil orang.
+
+    `/healthz` juga sengaja tidak ada. Liveness probe itu sifat cara layanan di-deploy, bukan
+    sifat kontraknya; menaruhnya di sini membuat setiap perubahannya jadi perubahan kontrak.
+
+servers:
+  - url: https://app.sewain.id/api/v1
+    description: |
+      Produksi — backoffice. Domainnya belum dibeli; lihat `05-backlog.md` §M6, `S1-073`.
+  - url: http://localhost:8080/api/v1
+    description: Development lokal, terhadap layanan host dari `S1-001`.
+
+# Setiap endpoint butuh bearer token kecuali ia memilih keluar dengan `security: []`.
+# Yang tanpa autentikasi: login, refresh, register (S1-082), dan verify-email (S1-084) --
+# empat jalur yang memang harus jalan sebelum ada sesi. Selebihnya butuh token, DAN butuh
+# email terverifikasi (BR-006): gerbangnya satu middleware, bukan atribut per path di sini.
+security:
+  - bearerAuth: []
+
+paths:
+
+  /auth/login:
+    post:
+      operationId: login
+      summary: Tukar email dan password dengan access token
+      description: |
+        Usahanya diturunkan dari baris `users` — `email` unik di seluruh sistem, jadi ia
+        menunjuk tepat satu user dan karenanya tepat satu usaha. Sengaja tidak ada parameter
+        usaha, slug, maupun subdomain (BR-004).
+
+        Kalau berhasil, refresh token diset sebagai cookie httpOnly, Secure, SameSite=Lax.
+        Ia tidak pernah ada di body respons, tempat script bisa membacanya.
+
+        Password salah, email tidak dikenal, dan akun nonaktif semuanya dijawab `401` yang
+        sama. Selisih apa pun di antara ketiganya memberi tahu penyerang email mana yang ada.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Berhasil masuk.
+          headers:
+            Set-Cookie:
+              description: Refresh token, httpOnly, Secure, SameSite=Lax.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /auth/refresh:
+    post:
+      operationId: refresh
+      summary: Rotasi refresh token dan terbitkan access token baru
+      description: |
+        Membaca refresh token dari cookie, tidak pernah dari body. Tanpa autentikasi karena
+        memang harus begitu — ini yang kamu panggil *justru karena* access token-nya sudah
+        kedaluwarsa.
+
+        Setiap panggilan menerbitkan refresh token baru dan mencabut yang dipakai.
+        **Menyodorkan token yang sudah dirotasi berarti ia dicuri**: seluruh rantai rotasi
+        dicabut dan semua sesi user itu berakhir, bukan sekadar request ini yang ditolak.
+      security: []
+      responses:
+        "200":
+          description: Terotasi.
+          headers:
+            Set-Cookie:
+              description: Refresh token baru. Yang lama sudah dicabut.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Cabut refresh token yang sedang dipakai
+      description: |
+        Mencabut refresh token di cookie lalu menghapusnya. Access token tidak dicabut — ia
+        stateless dan kedaluwarsa sendiri dalam 15 menit.
+
+        Idempoten: logout dua kali, atau tanpa cookie sama sekali, tetap `204`. Tidak ada yang
+        berguna untuk diceritakan tentang sesi yang memang sudah hilang.
+      responses:
+        "204":
+          description: Keluar. Cookie dihapus.
+          headers:
+            Set-Cookie:
+              description: Cookie refresh yang sudah kedaluwarsa.
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me:
+    get:
+      operationId: getMe
+      summary: Usaha, peran, dan izin pengguna yang sedang masuk
+      description: |
+        Sumber kebenaran untuk klien soal siapa dirinya dan apa yang boleh ia lakukan.
+
+        Frontend membaca `permissions` dari sini dan **tidak merender** aksi yang tidak ada di
+        dalamnya. Tombol nonaktif yang tetap `403` mengiklankan kemampuan yang tidak dimiliki
+        penggunanya dan melahirkan tiket support (BR-003).
+
+        Jangan mem-parsing access token di klien untuk mendapat data ini. Token itu untuk
+        server; men-decode-nya di browser membuat dua sumber kebenaran yang bisa berbeda.
+      responses:
+        "200":
+          description: Sesi yang sedang berjalan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+
+  securitySchemes:
+
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT access token 15 menit untuk sesi UI. Ia berjalan di `Authorization: Bearer`.
+
+        Usahanya diturunkan dari token dan **tidak pernah** dibaca dari header, query, maupun
+        body — menerimanya dari request adalah eskalasi lintas-usaha yang sepele (BR-001).
+
+        Satu pengecualian yang disengaja dan punya syarat: permukaan publik
+        `<slug>.sewain.id` menurunkan usahanya dari header `Host`, karena `Host` bukan data
+        aplikasi melainkan amplop routing yang sudah disaring proxy. Uraiannya di BR-030.
+
+  parameters:
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Ukuran halaman. Berpasangan dengan `cursor`; tidak ada `offset` di API ini.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: |
+        Cursor buram dari halaman sebelumnya. Hanya paginasi cursor — `offset` yang dalam di
+        tabel besar adalah sequential scan, jadi parameternya tidak ada.
+      schema:
+        type: string
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        UUID yang dibuat klien, **satu per niat pengguna** — bukan satu per percobaan jaringan.
+        Klien yang membuat kunci baru setiap retry sudah membatalkan seluruh gunanya.
+
+        Kunci yang sama dijalankan sekali; panggilan berikutnya memutar ulang respons pertama
+        bulat-bulat. Kunci yang masih berjalan dijawab `409 request-in-flight` (BR-090).
+      schema:
+        type: string
+        format: uuid
+
+  headers:
+
+    RateLimit-Limit:
+      description: Request yang diizinkan dalam jendela saat ini.
+      schema:
+        type: integer
+
+    RateLimit-Remaining:
+      description: Sisa request dalam jendela saat ini.
+      schema:
+        type: integer
+
+    RateLimit-Reset:
+      description: Detik sampai jendelanya reset.
+      schema:
+        type: integer
+
+  schemas:
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          examples: ["budi@rentalbudi.id"]
+        password:
+          type: string
+          format: password
+          minLength: 8
+
+    Session:
+      type: object
+      description: |
+        Dikembalikan login dan refresh. Membawa semua yang dibutuhkan klien untuk merender
+        kerangka aplikasi tanpa request kedua.
+
+        Refresh token **tidak** ada di sini — ia di cookie httpOnly, di luar jangkauan script
+        mana pun di halaman itu.
+      required: [access_token, expires_in, user, owner]
+      properties:
+        access_token:
+          type: string
+          description: JWT. Disimpan di memori saja, tidak pernah di localStorage.
+        expires_in:
+          type: integer
+          description: Detik sampai access token kedaluwarsa.
+          examples: [900]
+        user:
+          $ref: "#/components/schemas/SessionUser"
+        owner:
+          $ref: "#/components/schemas/SessionOwner"
+
+    Me:
+      type: object
+      description: |
+        Bentuk yang sama dengan `Session` dikurangi tokennya. `GET /me` dipanggil saat reload
+        halaman, ketika access token sudah ada di memori dan yang dibutuhkan cuma konteksnya.
+      required: [user, owner]
+      properties:
+        user:
+          $ref: "#/components/schemas/SessionUser"
+        owner:
+          $ref: "#/components/schemas/SessionOwner"
+
+    SessionUser:
+      type: object
+      required: [id, name, role, permissions, email_verified_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email_verified_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            `null` selama email belum terverifikasi. Frontend merender dinding verifikasi
+            dari field ini, bukan dari menebak lewat `403 email-not-verified` — gerbang itu
+            bisa muncul di endpoint mana pun, jadi menebaknya berarti menebak di tiap layar
+            (BR-006).
+        role:
+          type: string
+          description: |
+            Satu peran per orang, karena satu orang punya satu usaha (BR-003, BR-004).
+          enum: [owner, operator]
+        permissions:
+          type: array
+          description: |
+            String `resource:action` yang diberikan peran itu. Klien **menyembunyikan** aksi
+            yang tidak ada di sini, bukan menonaktifkannya — tombol yang `403` mengiklankan
+            kemampuan yang tidak dimiliki penggunanya.
+          items:
+            type: string
+            examples: ["bookings:write"]
+
+    SessionOwner:
+      type: object
+      description: |
+        Usaha tempat user ini bekerja. Tepat satu, selalu — tidak ada daftar dan tidak ada
+        pengalih (BR-004).
+
+        Tidak ada `currency`: uang di sistem ini selalu rupiah penuh sebagai integer
+        (`120000` = Rp 120.000). Tidak ada `timezone`: waktu di kawat selalu UTC, dan
+        Asia/Jakarta urusan render di frontend.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          examples: ["Rental Budi"]
+        slug:
+          type: [string, "null"]
+          description: |
+            Label subdomain usaha ini — `rentalbudi` berarti `rentalbudi.sewain.id` (BR-025).
+
+            **`null` adalah keadaan awal setiap usaha**, bukan kasus pinggir: slug tidak
+            ditanyakan saat daftar (BR-005) dan diisi belakangan dari `PATCH /settings`.
+            Pemilik tanpa slug tidak punya host sama sekali — katalog publik maupun portal
+            penyewa ikut tidak ada. Karena itu ia tidak `required`: usaha yang baru saja
+            terbit lewat `POST /auth/register` tidak bisa memenuhinya.
+          examples: ["rentalbudi"]
+
+    ErrorCode:
+      type: string
+      description: |
+        Kode error generik yang dipakai setiap endpoint sebelum sampai ke aturan bisnisnya.
+        Kode spesifik per aturan bisnis ada di `04-api-spec.md` §2 dan ditambahkan oleh item
+        backlog yang memilikinya.
+
+        Kodenya juga jadi segmen terakhir URI `Problem.type`, dan memakai **hyphen**, bukan
+        underscore.
+      enum:
+        - unauthenticated
+        - permission-denied
+        - validation-failed
+        - not-found
+        - rate-limited
+        - internal
+
+    ProblemError:
+      type: object
+      description: |
+        Satu detail per-field di dalam `Problem`. Ia membawa apa pun yang dibutuhkan kegagalan
+        spesifiknya, jadi properti tambahan diizinkan secara desain.
+      required: [field]
+      properties:
+        field:
+          type: string
+          examples: ["email"]
+        detail:
+          type: string
+      additionalProperties: true
+
+    Problem:
+      type: object
+      description: |
+        RFC 9457 `application/problem+json`. Setiap respons error di API ini memakainya.
+
+        `trace_id` adalah trace id OpenTelemetry — tiket support yang mengutipnya langsung
+        menunjuk ke span-nya. Tidak ada field `code` terpisah: kodenya adalah segmen terakhir
+        `type` (BR-092).
+      required: [type, title, status, trace_id]
+      properties:
+        type:
+          type: string
+          format: uri
+          examples: ["https://sewain.id/problems/permission-denied"]
+        title:
+          type: string
+          examples: ["Tidak punya izin"]
+        status:
+          type: integer
+          examples: [403]
+        detail:
+          type: string
+          examples: ["Aksi ini butuh izin bookings:write."]
+        instance:
+          type: string
+          examples: ["/api/v1/bookings/01926f3a-0000-7000-8000-000000000000"]
+        trace_id:
+          type: string
+          examples: ["4bf92f3577b34da6a3ce929d0e0e4736"]
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProblemError"
+
+  responses:
+
+    BadRequest:
+      description: Request tidak berbentuk.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+    Unauthorized:
+      description: Kredensial tidak ada, kedaluwarsa, atau tidak sah.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+    Forbidden:
+      description: |
+        Terautentikasi tapi tidak diizinkan. **`detail` menyebut izin yang dibutuhkan**, supaya
+        pemanggil bisa membedakan "kamu tidak bisa melakukan ini" dari "kamu belum bisa, minta
+        izin `bookings:write`" (BR-003).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+    NotFound:
+      description: |
+        Tidak ada data seperti itu **di usaha ini**. Baris milik usaha lain tidak bisa
+        dibedakan dari baris yang memang tidak ada, dan itu memang yang diinginkan — selisih
+        respons antar kasus adalah cara katalog usaha lain bocor (BR-001, BR-030).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+    Conflict:
+      description: |
+        Bentrok dengan keadaan sekarang. Di fase ini: `request-in-flight` ketika
+        `Idempotency-Key` yang sama masih diproses (BR-090).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+    UnprocessableEntity:
+      description: |
+        Validasi gagal. Juga dikembalikan ketika klien mengirim field yang dikelola server saat
+        update, atau mengirim `null` padahal key-nya seharusnya cukup diabaikan — dua hal itu
+        tidak sama.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+    TooManyRequests:
+      description: Batas laju terlampaui. Lihat header `RateLimit-*`.
+      headers:
+        RateLimit-Limit:
+          $ref: "#/components/headers/RateLimit-Limit"
+        RateLimit-Remaining:
+          $ref: "#/components/headers/RateLimit-Remaining"
+        RateLimit-Reset:
+          $ref: "#/components/headers/RateLimit-Reset"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
