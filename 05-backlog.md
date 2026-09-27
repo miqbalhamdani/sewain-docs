@@ -131,63 +131,66 @@ bisa dihubungi, dan `S1-001` menyediakannya dari mesin developer sendiri.
 | S1-006 | Guard policy RLS | BE | 003 | `make lint-rls` keluar non-zero untuk tabel ber-`owner_id` tanpa policy, **dan untuk `ENABLE` tanpa `FORCE`** — mode gagal yang terlihat sehat sepenuhnya (BR-001) | done | |
 | S1-007 | Skema `owners` (+`slug`), `users` (+`owner_id`, `role`), `refresh_tokens` | BE | 003 | Sesuai `03-erd.md` §1; **`slug` NULLABLE** — kosong adalah keadaan awal, dan dua pemilik tanpa slug tidak saling tabrakan di unique index; kalau diisi: unik global, lolos format label DNS, **dan ditolak database bila masuk daftar subdomain terlarang** (`app`, `api`, `mail`, …) (BR-025); **email unik GLOBAL** — alamat yang sama ditolak di usaha kedua, dan itu yang membuat login cukup email+password; **`refresh_tokens` ber-`owner_id` yang tidak cocok `users.owner_id` ditolak database** — FK komposit, bukan validasi aplikasi (BR-004) | done | |
 | S1-008 | Auth: login, rotasi refresh, logout, argon2id, matriks peran | BE | 007 | `403` menyebut izin yang dibutuhkan di `detail`; `operator` ditolak di route khusus owner (BR-003). **`owner_id` dan `role` di access token berasal dari baris `users`**, tidak pernah dari request (BR-004); refresh token yang sudah dirotasi lalu dipakai lagi mencabut seluruh sesi user itu, bukan menolak satu request; data usaha lain → `404` bukan `403` | done | |
-| S1-082 | **`POST /auth/register`**: usaha + pemilik dalam satu transaksi | BE | 007, 008 | **Ini titik masuk sistem** — tanpanya `login` tidak punya baris untuk diverifikasi. `owners` + `users` ber-`role='owner'` terbit bersama; gagal di tengah **tidak** meninggalkan usaha yatim; email terpakai → `422 email-taken`; **`slug` tidak diminta di sini** — opsional & berbayar, diisi dari `/settings` (BR-025); `business_type` di luar enam preset → `422`; batas laju 5/jam per IP; balasan `201` langsung membawa sesi (BR-005, BR-017) | todo | |
-| S1-083 | Layar daftar: email, usaha, **pilih jenis usaha** | FE | 013, 082 | Jenis usaha dipilih dengan bahasa juragan ("rental mobil & motor", "rental alat"), bukan nama enum; sukses **langsung masuk tanpa login ulang**, lalu mendarat di **dinding verifikasi**, bukan dashboard — sesinya diterbitkan justru supaya ia bisa memanggil `resend` (`04-api-spec.md` §3.1, BR-005, BR-006, BR-017) | todo | |
-| S1-084 | **Gerbang verifikasi email**: middleware + token + kirim ulang | BE | 082 | **Satu middleware, bukan cek per handler** — seluruh endpoint di luar daftar putih (`login`/`refresh`/`logout`/`verify-email`/`resend`/`GET /me`) dibalas `403 email-not-verified` selama `users.email_verified_at` kosong; token sekali pakai, mati 24 jam, kedaluwarsa → `422`; kirim ulang 3/jam per pengguna dan **selalu tersedia**; **operator undangan terverifikasi otomatis saat menerima undangan** — nol surel kedua (BR-004, BR-006) | todo | |
+| S1-082 | **`POST /auth/register`**: usaha + pemilik dalam satu transaksi | BE | 007, 008 | **Ini titik masuk sistem** — tanpanya `login` tidak punya baris untuk diverifikasi. `owners` + `users` ber-`role='owner'` terbit bersama; gagal di tengah **tidak** meninggalkan usaha yatim; email terpakai → `422 email-taken`; **`slug` tidak diminta di sini** — opsional & berbayar, diisi dari `/settings` (BR-025); `business_type` di luar enam preset → `422`; batas laju 5/jam per IP; balasan `201` langsung membawa sesi (BR-005, BR-017) | done | |
+| S1-083 | Layar daftar: email, usaha, **pilih jenis usaha** | FE | 013, 082 | Jenis usaha dipilih dengan bahasa juragan ("rental mobil & motor", "rental alat"), bukan nama enum; sukses **langsung masuk tanpa login ulang**, lalu mendarat di **dinding verifikasi**, bukan dashboard — sesinya diterbitkan justru supaya ia bisa memanggil `resend` (`04-api-spec.md` §3.1, BR-005, BR-006, BR-017) | done | |
+| S1-084 | **Gerbang verifikasi email**: middleware + token + kirim ulang | BE | 082 | **Satu middleware, bukan cek per handler** — seluruh endpoint di luar daftar putih (`login`/`refresh`/`logout`/`verify-email`/`resend`/`GET /me`) dibalas `403 email-not-verified` selama `users.email_verified_at` kosong; token sekali pakai, mati 24 jam, kedaluwarsa → `422`; kirim ulang 3/jam per pengguna dan **selalu tersedia**; **operator undangan terverifikasi otomatis saat menerima undangan** — nol surel kedua (BR-004, BR-006) | done | |
 | S1-009 | **`/settings` API**: knob pemilik | BE | 008 | `GET`/`PATCH` 🔒 owner. Semua knob bisa diubah **dan terbaca konsumennya**, bukan cuma tersimpan: `slug` **opsional dan mulai kosong** — diisi dari sini, bukan saat daftar; lolos format label DNS + daftar terlarang, butuh paket `usaha` ke atas yang **belum ditegakkan di fase 1** (BR-025, BR-080), **`booking_code_prefix`** (BR-024, 2–6 huruf besar/angka, default `SWN`), `draft_expiry_hours` (BR-027), **`payment_due_hours`** dan **`no_show_tolerance_hours`** (BR-057; `payment_due_hours` 0 ditolak database, toleransi 0 diterima), `require_payment_before_pickup` (BR-038), tiga sakelar pengingat (BR-070). **Tidak satu pun konsumen boleh menyimpan default-nya sendiri** — itu inti keempat BR itu. **Pengecualian yang disengaja: `slug` belum punya konsumen sampai M5** (`S1-051`/`S1-060`) — ia tersimpan dan tervalidasi di sini, tapi baru ada yang membacanya 12 minggu kemudian. Layar pengaturan wajib jujur soal itu, bukan menyiratkan halamannya sudah hidup. `operator` yang memanggil `PATCH` → `403` yang menyebut izinnya (BR-003) | done | |
 | S1-010 | **`/users` API**: undang, ubah peran, nonaktifkan akun | BE | 008 | Pemilik bisa mengundang `operator` — tanpa ini peran itu ada di matriks tapi tidak ada cara memakainya. **Email yang sudah dipakai di usaha mana pun ditolak `422`** — unik global (BR-004); `DELETE` menyetel `users.status='disabled'`, **tidak** menghapus baris — `created_by` di tabel lain harus tetap bisa dijelaskan; nonaktif → sesi mati **≤ 15 menit**; `operator` tidak bisa memanggil endpoint ini sama sekali (BR-003) | done | |
 | S1-011 | Envelope error RFC 9457, `trace_id`, **wiring OpenTelemetry** | BE | 004 | Setiap error membawa `trace_id` yang **bisa ditelusuri ke span-nya** — bukan string acak; span memuat `owner_id`, route, dan durasi query; katalog `type` cocok dengan `04-api-spec.md` §2 (BR-092) | done | |
 | S1-012 | **`Idempotency-Key`**: middleware + penyimpanan hasil di Redis | BE | 001, 011 | `POST` yang sama dengan kunci sama dijalankan **sekali** (BR-090), panggilan kedua memutar ulang respons pertama (status + body identik) tanpa menyentuh database; kunci tanpa hasil tersimpan & masih berjalan → `409 request-in-flight`; TTL 24 jam | todo | |
-| S1-013 | App shell, routing, layar login, sesi, guard peran | FE | 002, 008, 082, 084 | **Dinding verifikasi**: `403 email-not-verified` ditangani di lapisan klien HTTP sebagai pengalihan ke layar verifikasi, bukan toast di tiap layar (BR-006). Layar login bisa benar-benar dicoba karena ada jalur membuat akunnya (`S1-082`) — bukan diuji dengan baris yang di-seed tangan. Access token di memori, refresh di cookie httpOnly **host-only di `app.sewain.id` — tanpa atribut `Domain`** (BR-025); reload tetap masuk; `operator` tidak melihat navigasi Laporan sama sekali (BR-003). Nama usaha terlihat di header, dibaca dari `/me` — bukan dari token yang di-decode di klien (BR-004) | todo | |
+| S1-013 | App shell, routing, layar login, sesi, guard peran | FE | 002, 008, 082, 084 | **Dinding verifikasi**: `403 email-not-verified` ditangani di lapisan klien HTTP sebagai pengalihan ke layar verifikasi, bukan toast di tiap layar (BR-006). Layar login bisa benar-benar dicoba karena ada jalur membuat akunnya (`S1-082`) — bukan diuji dengan baris yang di-seed tangan. Access token di memori, refresh di cookie httpOnly **host-only di `app.sewain.id` — tanpa atribut `Domain`** (BR-025); reload tetap masuk; `operator` tidak melihat navigasi Laporan sama sekali (BR-003). Nama usaha terlihat di header, dibaca dari `/me` — bukan dari token yang di-decode di klien (BR-004) | done | |
 
-> **Sepuluh dari enam belas baris M0 sudah `done`, dan semuanya dijalankan, bukan dibaca.**
-> `make check` di `sewain-api` exit 0 — `generate`, `generated-diff`, `fmt-check`, `vet`,
-> `lint`, `lint-imports`, `lint-rls`, `test`, `test-race` — terhadap PostgreSQL 18.4, Redis
-> 8.4.0, dan MinIO yang benar-benar berjalan di host. Kolom Owner dibiarkan kosong: aturan
-> "klaim dengan menyetel `wip` dan menulis namamu" berlaku untuk orang yang mau mengambil
-> item, dan yang tersisa di M0 semuanya `todo`.
+> **M0 tinggal satu baris: `S1-012`.** Lima belas dari enam belas `done`, dan semuanya
+> dijalankan, bukan dibaca — `make check` exit 0 di `sewain-api`, `npm run generate:check`
+> + `lint` + `typecheck` + `build` hijau di `sewain-web`, terhadap PostgreSQL 18.4,
+> Redis 8.4.0, MinIO dan Mailpit yang benar-benar berjalan di host.
+>
+> **Alur penuhnya sudah dijalankan di browser**, bukan cuma di test: daftar → mendarat di
+> dinding verifikasi → tautan diambil dari Mailpit → dashboard → undang operator →
+> terima undangan → login sebagai operator → **navigasi Laporan hilang sama sekali**.
+>
+> **`S1-012` sengaja ditinggal terakhir.** `Idempotency-Key` wajib di delapan endpoint
+> (`04-api-spec.md` §2.1), dan tidak satu pun sudah ada — yang pertama `POST /bookings`
+> di M2. Mengerjakannya sekarang berarti menulis middleware tanpa satu pun jalur yang
+> memakainya, dan membuktikannya berarti menunggu `S1-026`.
 >
 > **Yang belum dijalankan sama sekali: dua skrip bukti SQL** (`03-verify-constraints.sql`,
-> `03-verify-overlap-constraint.sql`; cara menjalankannya di `03-erd.md` §3). `000004`
-> menambah tiga constraint baru, dan §3 ERD mewajibkan skripnya ikut bertambah — itu utang
-> yang masih terbuka.
+> `03-verify-overlap-constraint.sql`; cara menjalankannya di `03-erd.md` §3). Sejak
+> `docs` di-realign, M0 menambah **empat** migrasi dengan constraint baru — `000004`
+> knob pemilik, `000005` `business_type`, `000006` `email_verified_at` — dan §3 ERD
+> mewajibkan skripnya ikut bertambah. Itu utang yang masih terbuka dan satu-satunya
+> yang menahan M0 disebut benar-benar tuntas.
 >
-> **`S1-007` sempat melanggar acceptance-nya sendiri**, dan kompilator yang menemukannya.
-> `000002` menulis `slug text NOT NULL` sementara `03-erd.md` §1 dan `04-api-spec.md` §3.1
-> menyatakannya opsional; begitu `make generate` dijalankan ulang terhadap `openapi.yaml`
-> yang sudah di-realign, `SessionOwner.Slug` jadi `*string` dan `go build` gagal. Diperbaiki
-> di migrasi itu sendiri karena nol baris pernah dijalankan di mana pun.
+> ---
 >
-> **`S1-008` punya dependensi melingkar** yang baru kelihatan saat dikerjakan: acceptance-nya
-> menuntut "`operator` ditolak di route khusus owner" dan "data usaha lain → `404`", tapi
-> route khusus owner pertama ada di `S1-009` — yang `Depends`-nya justru `008`. `S1-009` dan
-> `S1-010` karena itu dikerjakan bersamaan, dan `/settings` saja tidak cukup: ia tidak punya
-> `{id}`, jadi kasus 404-nya butuh `/users/{id}`. Kalau ada yang mau merapikan kontraknya,
-> yang benar adalah memindahkan dua kriteria itu ke item yang memiliki route-nya.
+> **Enam lubang kontrak yang baru kelihatan saat dikerjakan**, dan tidak satu pun
+> kelihatan saat dibaca:
 >
-> **Kasus 404 tidak punya satu baris pun cek kepemilikan.** Query jalan di dalam `InOwnerTx`,
-> RLS membuat baris usaha lain tidak terlihat, dan nol baris itu yang jadi `404`. Test-nya
-> membandingkan dua balasan — id milik usaha lain dan id yang tidak ada di mana pun — lalu
-> menuntut keduanya **tidak bisa dibedakan**. Selisih di antara keduanya adalah direktori id
-> pengguna setiap usaha lain.
+> 1. **`S1-007` melanggar acceptance-nya sendiri** — `slug text NOT NULL` melawan
+>    `03-erd.md` §1. Kompilator yang menemukannya, lewat `make generate`.
+> 2. **`S1-008` punya dependensi melingkar** — acceptance-nya menuntut route khusus owner
+>    yang baru ada di `S1-009`, yang `Depends`-nya justru `008`. Dan `/settings` saja
+>    tidak cukup: kasus `404` butuh `{id}`, jadi `S1-010` ikut ditarik.
+> 3. **Nol item membangun pengirim surel**, padahal `S1-084` menuntutnya. `S1-054` itu
+>    WhatsApp di M5. Diselesaikan dengan Mailpit di balik interface `Mailer`; provider
+>    produksi tetap keputusan M6.
+> 4. **Nol endpoint untuk menerima undangan**, padahal tiga tempat menyebut "undangan
+>    diterima". Tanpa `POST /auth/accept-invitation`, baris `invited` dari `S1-010` tidak
+>    bisa dipakai sama sekali.
+> 5. **`S1-083` bertentangan dengan `04-api-spec.md`** soal ke mana pendaftar mendarat.
+>    Backlognya yang salah; acceptance-nya sudah diperbaiki.
+> 6. **Batas laju tidak punya pemiliknya sendiri** — §7 menuntutnya di lima permukaan,
+>    dan `S1-082` yang akhirnya membangun `internal/platform/ratelimit`.
 >
-> **Tiga cacat yang cuma ketahuan saat dijalankan**, dan ketiganya sisa salinan `new-commerce`:
-> seed test memasang `role = 'ops'` (CHECK di sini cuma menerima `owner`/`operator`); seluruh
-> test auth memberi tiap owner seed sebuah slug sehingga jalur `NULL` yang justru keadaan awal
-> BR-005 tidak pernah tersentuh; dan `Refresh` tidak pernah memeriksa `users.status`, jadi akun
-> yang dinonaktifkan tetap menerbitkan access token tiap 15 menit selama 30 hari — janji BR-004
-> "sesi mati ≤ 15 menit" cuma benar untuk akun yang tidak pernah dicabut siapa pun.
->
-> **`S1-001` memasang MinIO dari formula brew yang sudah deprecated** (upstream diarsipkan,
-> brew menonaktifkannya 2027-02-17). Ia lokal saja — produksi memakai R2 — jadi risikonya
-> berhenti di mesin developer, tapi kalau fase 1 molor melewati tanggal itu, penggantinya
-> perlu diputuskan. Checker `/healthz`-nya sengaja bukan `internal/storage`: adapter S3
-> bertanda tangan milik `S1-033` di M3, dan probe liveness tidak butuh SigV4.
+> **Dan satu bug yang cuma bisa ditemukan dengan menjalankan, bukan membaca:** halaman
+> verifikasi memanggil `/auth/refresh` sementara `SessionProvider` sedang mem-boot
+> refresh-nya sendiri. Dua rotasi atas satu cookie dibaca server sebagai pencurian, dan
+> deteksi pakai-ulang `S1-008` mencabut seluruh sesi penggunanya — **persis seperti yang
+> seharusnya**. Klien sekarang single-flight.
 >
 > **Sisa sapuan yang belum dikerjakan:** komentar ber-ID `P1-xxx` di `sewain-api`,
-> `internal/http/isolation_test.go:76` yang menyebut *brands/categories/products*, dan kutipan
-> ke `tdd.md`/`flows.md` yang tidak ada di `docs/`. `duplicate-sku` dan `version-conflict`
-> sudah dicopot bersama `S1-011`.
+> `internal/http/isolation_test.go` yang menyebut *brands/categories/products*, dan
+> kutipan ke `tdd.md`/`flows.md` yang tidak ada di `docs/`.
 
 > Batas route berdiri di `S1-013` dan tidak boleh kabur setelahnya: subtree backoffice
 > (`app.sewain.id`) dan subtree publik (`<slug>.sewain.id` — katalog + `booking/[token]`). Subtree
