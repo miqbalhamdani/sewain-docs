@@ -8,14 +8,14 @@ info:
 
     **Berkas ini sengaja belum lengkap.** Ia memuat konvensi dari `04-api-spec.md` §2 yang
     dipakai setiap endpoint — autentikasi, envelope error, paginasi, rate limit — plus
-    permukaan auth yang sudah dibangun, dan tidak lebih.
+    permukaan yang sudah dibangun, dan tidak lebih.
 
     Path ditambahkan oleh item backlog yang memilikinya: `S1-082` `/auth/register`,
-    `S1-084` `/auth/verify-email` + `/auth/verify-email/resend`, `S1-009` `/settings`,
-    `S1-010` `/users`, `S1-016` resources, `S1-024` ketersediaan, `S1-030` booking,
-    dan seterusnya.
+    `S1-084` `/auth/verify-email` + `/auth/verify-email/resend`, `S1-016` resources,
+    `S1-024` ketersediaan, `S1-030` booking, dan seterusnya.
     Menambahkan semuanya di muka mendahului keputusan desain yang justru jadi isi item-item
-    itu. `S1-008` menambahkan empat path auth di bawah.
+    itu. `S1-008` menambahkan empat path auth; `S1-009` menambahkan `/settings` dan
+    `S1-010` menambahkan `/users` + `/users/{id}`.
 
     Jadi berkas ini **kurang** dibanding `04-api-spec.md` §3–§8, bukan **bertentangan**
     dengannya. Aturan di `CLAUDE.md` tetap berlaku untuk apa pun yang dijelaskan dua-duanya:
@@ -157,6 +157,165 @@ paths:
                 $ref: "#/components/schemas/Me"
         "401":
           $ref: "#/components/responses/Unauthorized"
+
+  /settings:
+    get:
+      operationId: getSettings
+      summary: Baca knob pemilik
+      description: |
+        Satu-satunya tempat knob pemilik hidup. Tidak satu pun konsumennya boleh menyimpan
+        default-nya sendiri — itu inti BR-024, BR-027, BR-038, dan BR-057 sekaligus.
+      responses:
+        "200":
+          description: Knob usaha ini.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+    patch:
+      operationId: updateSettings
+      summary: Ubah knob pemilik
+      description: |
+        Hanya peran `owner`. `operator` yang memanggilnya dibalas `403` yang **menyebut**
+        `settings:write` di `detail` (BR-003).
+
+        Key yang absen dibiarkan apa adanya; `null` eksplisit adalah `422`. Slug yang sudah
+        terisi tidak bisa dikosongkan lagi lewat endpoint ini — mencabut halaman publik
+        usaha adalah keputusan yang belum punya kontraknya.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettingsUpdate"
+      responses:
+        "200":
+          description: Knob sesudah diubah.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /users:
+    get:
+      operationId: listUsers
+      summary: Akun di usaha ini
+      description: |
+        Hanya peran `owner` (`users:read`). `operator` tidak boleh menyentuh endpoint ini
+        sama sekali — bukan melihatnya lalu ditolak (BR-003).
+      responses:
+        "200":
+          description: Akun di usaha ini.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+    post:
+      operationId: inviteUser
+      summary: Undang akun ke usaha ini
+      description: |
+        Membuat baris `users` berstatus `invited` tanpa password. Tanpa endpoint ini peran
+        `operator` ada di matriks izin tapi tidak ada cara memakainya.
+
+        **Email unik global.** Alamat yang sudah dipakai di usaha mana pun ditolak
+        `422 email-taken`, dan itu yang membuat login cukup email + password (BR-004).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InviteUserRequest"
+      responses:
+        "201":
+          description: Akun terbit, menunggu undangan diterima.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    patch:
+      operationId: updateUser
+      summary: Ubah peran atau status akun
+      description: |
+        `email` dan `owner_id` tidak bisa diubah. Satu user milik tepat satu usaha, dan
+        alamatnya yang menunjuk usaha itu saat login (BR-004).
+
+        Id milik usaha lain dibalas **`404`, bukan `403`** — baris usaha lain tidak bisa
+        dibedakan dari baris yang memang tidak ada (BR-001).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: Akun sesudah diubah.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+    delete:
+      operationId: disableUser
+      summary: Nonaktifkan akun
+      description: |
+        Menyetel `users.status = 'disabled'`. **Barisnya tidak dihapus** — `created_by` di
+        tabel lain harus tetap bisa dijelaskan, dan riwayat yang menunjuk akun hilang tidak
+        bisa dibaca siapa pun.
+
+        Sesi yang dicabut mati dalam **≤ 15 menit**, batas TTL access token. Refresh yang
+        datang sesudahnya ditolak, jadi tidak ada sesi yang hidup lebih lama dari itu.
+      responses:
+        "204":
+          description: Akun nonaktif. Barisnya tetap ada.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
 components:
 
@@ -340,6 +499,166 @@ components:
             terbit lewat `POST /auth/register` tidak bisa memenuhinya.
           examples: ["rentalbudi"]
 
+    Settings:
+      type: object
+      description: |
+        Knob pemilik, semuanya. Tiap satu ada karena sebuah aturan bisnis melarang
+        meng-hardcode-nya, dan `PATCH /settings` satu-satunya tempat mereka disetel.
+      required:
+        - slug
+        - booking_code_prefix
+        - require_payment_before_pickup
+        - draft_expiry_hours
+        - payment_due_hours
+        - no_show_tolerance_hours
+        - notify_pickup_reminder
+        - notify_return_reminder
+        - notify_overdue_reminder
+      properties:
+        slug:
+          type: [string, "null"]
+          description: |
+            Sama dengan `SessionOwner.slug`: `null` adalah keadaan awal, dan di sinilah ia
+            diisi — bukan saat daftar (BR-005, BR-025).
+
+            **Belum ada yang membacanya sampai M5** (`S1-051`, `S1-060`). Ia tersimpan dan
+            tervalidasi di sini, tapi halaman publiknya baru hidup 12 minggu kemudian, dan
+            layar pengaturan wajib jujur soal itu.
+          examples: ["rentalbudi"]
+        booking_code_prefix:
+          type: string
+          pattern: "^[A-Z0-9]{2,6}$"
+          default: SWN
+          description: |
+            Awalan kode booking, `SWN-0001`. Mengubahnya **tidak** menyentuh kode yang sudah
+            terbit dan **tidak** me-reset pencacahnya (BR-024).
+          examples: ["RBD"]
+        require_payment_before_pickup:
+          type: boolean
+          default: false
+          description: Kalau menyala, pengambilan ditolak selama invoicenya belum lunas (BR-038).
+        draft_expiry_hours:
+          type: integer
+          minimum: 1
+          default: 24
+          description: Umur draft dari halaman publik sebelum dibatalkan otomatis (BR-027).
+        payment_due_hours:
+          type: integer
+          minimum: 1
+          default: 24
+          description: |
+            Tenggat bayar sejak invoice terbit. **`0` ditolak database** — tenggat nol berarti
+            invoice yang lewat tempo pada detik ia terbit (BR-057).
+        no_show_tolerance_hours:
+          type: integer
+          minimum: 0
+          default: 3
+          description: |
+            Tenggang sesudah `start_at` sebelum booking ditandai `no_show`. **`0` diterima**,
+            dan itu bedanya dengan `payment_due_hours` — pemilik yang mau membebaskan unitnya
+            di hari yang sama memang menyetelnya nol (BR-057).
+        notify_pickup_reminder:
+          type: boolean
+          default: true
+          description: Pengingat H-1 ambil (BR-070).
+        notify_return_reminder:
+          type: boolean
+          default: true
+          description: Pengingat H-1 balik (BR-070).
+        notify_overdue_reminder:
+          type: boolean
+          default: true
+          description: Pengingat saat kondisi telat terpenuhi (BR-070).
+
+    SettingsUpdate:
+      type: object
+      description: |
+        Semua field opsional. Key yang absen dibiarkan apa adanya; `null` eksplisit adalah
+        `422` — menghilangkan field dan mengirim `null` bukan hal yang sama.
+      properties:
+        slug:
+          type: string
+          examples: ["rentalbudi"]
+        booking_code_prefix:
+          type: string
+          pattern: "^[A-Z0-9]{2,6}$"
+        require_payment_before_pickup:
+          type: boolean
+        draft_expiry_hours:
+          type: integer
+          minimum: 1
+        payment_due_hours:
+          type: integer
+          minimum: 1
+        no_show_tolerance_hours:
+          type: integer
+          minimum: 0
+        notify_pickup_reminder:
+          type: boolean
+        notify_return_reminder:
+          type: boolean
+        notify_overdue_reminder:
+          type: boolean
+
+    User:
+      type: object
+      description: |
+        Akun di usaha ini. Tidak pernah memuat `password_hash` maupun `owner_id` — yang
+        pertama rahasia, yang kedua sudah tersirat dari usaha pemanggilnya.
+      required: [id, email, name, role, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+          description: Unik di seluruh sistem, bukan per usaha (BR-004).
+        name:
+          type: string
+        role:
+          type: string
+          enum: [owner, operator]
+        status:
+          type: string
+          description: |
+            `invited` sampai undangannya diterima, `disabled` sesudah dinonaktifkan. Nol
+            endpoint di API ini yang menghapus baris `users`.
+          enum: [invited, active, disabled]
+        last_login_at:
+          type: [string, "null"]
+          format: date-time
+
+    InviteUserRequest:
+      type: object
+      required: [email, name]
+      properties:
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          minLength: 1
+        role:
+          type: string
+          enum: [owner, operator]
+          default: operator
+
+    UpdateUserRequest:
+      type: object
+      description: |
+        Minimal satu field. `email` dan `owner_id` sengaja tidak ada di sini.
+      properties:
+        role:
+          type: string
+          enum: [owner, operator]
+        status:
+          type: string
+          description: |
+            `invited` tidak ada di sini — ia dikelola server dan cuma berlaku sebelum
+            undangannya diterima.
+          enum: [active, disabled]
+
     ErrorCode:
       type: string
       description: |
@@ -356,6 +675,9 @@ components:
         - not-found
         - rate-limited
         - internal
+        - email-taken
+        - slug-taken
+        - slug-invalid
 
     ProblemError:
       type: object

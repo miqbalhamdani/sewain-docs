@@ -368,7 +368,7 @@ END $fn$;
 -- lain berhasil tanpa error. Barisnya masuk, lalu hilang dari pandangan si penulis
 -- karena USING menyaringnya kembali. BR-001 melarang owner_id datang dari request,
 -- tapi itu disiplin aplikasi; FORCE ada justru karena disiplin aplikasi tidak cukup.
--- Kasus RLS 5/5 di 03-verify-constraints.sql yang membuktikannya.
+-- Kasus RLS 5/6 di 03-verify-constraints.sql yang membuktikannya.
 -- BR-004: dua pembacaan yang jalan SEBELUM konteks owner ada.
 --
 -- `users` dan `refresh_tokens` dua-duanya ber-RLS (§2), dan dua-duanya harus dibaca
