@@ -864,6 +864,7 @@ components:
         - slug-invalid
         - email-not-verified
         - verification-token-invalid
+        - request-in-flight
 
     ProblemError:
       type: object

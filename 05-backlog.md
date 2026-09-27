@@ -137,22 +137,37 @@ bisa dihubungi, dan `S1-001` menyediakannya dari mesin developer sendiri.
 | S1-009 | **`/settings` API**: knob pemilik | BE | 008 | `GET`/`PATCH` 🔒 owner. Semua knob bisa diubah **dan terbaca konsumennya**, bukan cuma tersimpan: `slug` **opsional dan mulai kosong** — diisi dari sini, bukan saat daftar; lolos format label DNS + daftar terlarang, butuh paket `usaha` ke atas yang **belum ditegakkan di fase 1** (BR-025, BR-080), **`booking_code_prefix`** (BR-024, 2–6 huruf besar/angka, default `SWN`), `draft_expiry_hours` (BR-027), **`payment_due_hours`** dan **`no_show_tolerance_hours`** (BR-057; `payment_due_hours` 0 ditolak database, toleransi 0 diterima), `require_payment_before_pickup` (BR-038), tiga sakelar pengingat (BR-070). **Tidak satu pun konsumen boleh menyimpan default-nya sendiri** — itu inti keempat BR itu. **Pengecualian yang disengaja: `slug` belum punya konsumen sampai M5** (`S1-051`/`S1-060`) — ia tersimpan dan tervalidasi di sini, tapi baru ada yang membacanya 12 minggu kemudian. Layar pengaturan wajib jujur soal itu, bukan menyiratkan halamannya sudah hidup. `operator` yang memanggil `PATCH` → `403` yang menyebut izinnya (BR-003) | done | |
 | S1-010 | **`/users` API**: undang, ubah peran, nonaktifkan akun | BE | 008 | Pemilik bisa mengundang `operator` — tanpa ini peran itu ada di matriks tapi tidak ada cara memakainya. **Email yang sudah dipakai di usaha mana pun ditolak `422`** — unik global (BR-004); `DELETE` menyetel `users.status='disabled'`, **tidak** menghapus baris — `created_by` di tabel lain harus tetap bisa dijelaskan; nonaktif → sesi mati **≤ 15 menit**; `operator` tidak bisa memanggil endpoint ini sama sekali (BR-003) | done | |
 | S1-011 | Envelope error RFC 9457, `trace_id`, **wiring OpenTelemetry** | BE | 004 | Setiap error membawa `trace_id` yang **bisa ditelusuri ke span-nya** — bukan string acak; span memuat `owner_id`, route, dan durasi query; katalog `type` cocok dengan `04-api-spec.md` §2 (BR-092) | done | |
-| S1-012 | **`Idempotency-Key`**: middleware + penyimpanan hasil di Redis | BE | 001, 011 | `POST` yang sama dengan kunci sama dijalankan **sekali** (BR-090), panggilan kedua memutar ulang respons pertama (status + body identik) tanpa menyentuh database; kunci tanpa hasil tersimpan & masih berjalan → `409 request-in-flight`; TTL 24 jam | todo | |
+| S1-012 | **`Idempotency-Key`**: middleware + penyimpanan hasil di Redis | BE | 001, 011 | `POST` yang sama dengan kunci sama dijalankan **sekali** (BR-090), panggilan kedua memutar ulang respons pertama (status + body identik) tanpa menyentuh database; kunci tanpa hasil tersimpan & masih berjalan → `409 request-in-flight`; TTL 24 jam | done | |
 | S1-013 | App shell, routing, layar login, sesi, guard peran | FE | 002, 008, 082, 084 | **Dinding verifikasi**: `403 email-not-verified` ditangani di lapisan klien HTTP sebagai pengalihan ke layar verifikasi, bukan toast di tiap layar (BR-006). Layar login bisa benar-benar dicoba karena ada jalur membuat akunnya (`S1-082`) — bukan diuji dengan baris yang di-seed tangan. Access token di memori, refresh di cookie httpOnly **host-only di `app.sewain.id` — tanpa atribut `Domain`** (BR-025); reload tetap masuk; `operator` tidak melihat navigasi Laporan sama sekali (BR-003). Nama usaha terlihat di header, dibaca dari `/me` — bukan dari token yang di-decode di klien (BR-004) | done | |
 
-> **M0 tinggal satu baris: `S1-012`.** Lima belas dari enam belas `done`, dan semuanya
-> dijalankan, bukan dibaca — `make check` exit 0 di `sewain-api`, `npm run generate:check`
-> + `lint` + `typecheck` + `build` hijau di `sewain-web`, terhadap PostgreSQL 18.4,
-> Redis 8.4.0, MinIO dan Mailpit yang benar-benar berjalan di host.
+> **M0 tuntas. Enam belas dari enam belas `done`**, dan semuanya dijalankan, bukan dibaca
+> — `make check` exit 0 di `sewain-api`, `npm run generate:check` + `lint` + `typecheck`
+> + `build` hijau di `sewain-web`, terhadap PostgreSQL 18.4, Redis 8.4.0, MinIO dan
+> Mailpit yang benar-benar berjalan di host.
 >
 > **Alur penuhnya sudah dijalankan di browser**, bukan cuma di test: daftar → mendarat di
 > dinding verifikasi → tautan diambil dari Mailpit → dashboard → undang operator →
 > terima undangan → login sebagai operator → **navigasi Laporan hilang sama sekali**.
 >
-> **`S1-012` sengaja ditinggal terakhir.** `Idempotency-Key` wajib di delapan endpoint
-> (`04-api-spec.md` §2.1), dan tidak satu pun sudah ada — yang pertama `POST /bookings`
-> di M2. Mengerjakannya sekarang berarti menulis middleware tanpa satu pun jalur yang
-> memakainya, dan membuktikannya berarti menunggu `S1-026`.
+> **`S1-012` dikerjakan terakhir, dan tanpa satu pun pemakainya.** `Idempotency-Key`
+> wajib di delapan endpoint (`04-api-spec.md` §2.1) dan tidak satu pun sudah ada — yang
+> pertama `POST /bookings` di `S1-026`. Middleware-nya karena itu diuji langsung, bukan
+> lewat route: sembilan kasus yang mencakup replay, `409` saat masih berjalan, scoping
+> per pemilik, dan dua yang paling gampang salah dirancang (di bawah). Delapan route-nya
+> **sudah terdaftar sebagai komentar** di `routeAccessTable`, jadi item yang membawanya
+> tinggal menyalakan satu kolom.
+>
+> **Dua keputusan di `S1-012` yang tidak tertulis di acceptance-nya:**
+>
+> - **`5xx` tidak disimpan, `4xx` disimpan.** Kontrak menyuruh klien me-retry dengan
+>   kunci **yang sama**; kalau `500` ikut disimpan, instruksi itu memutar ulang kegagalan
+>   selama 24 jam dan handler-nya tidak pernah jalan lagi — gangguan sesaat jadi permanen
+>   justru oleh mekanisme yang ada supaya retry aman. `422` sebaliknya: ia keputusan,
+>   bukan gangguan, dan menanyakan hal yang sama tidak mengubah jawabannya.
+> - **Gagal-terbuka kalau Redis mati.** Yang mencegah booking ganda itu exclusion
+>   constraint (BR-022), bukan middleware ini — `CLAUDE.md` sendiri menulis "yang
+>   diperbaiki middleware ini adalah responsnya". Menolak setiap tulis karena cache mati
+>   mengubah dependensi yang pincang jadi outage di endpoint yang justru menghasilkan uang.
 >
 > **Yang belum dijalankan sama sekali: dua skrip bukti SQL** (`03-verify-constraints.sql`,
 > `03-verify-overlap-constraint.sql`; cara menjalankannya di `03-erd.md` §3). Sejak
