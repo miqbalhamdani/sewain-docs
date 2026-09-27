@@ -10,12 +10,13 @@ info:
     dipakai setiap endpoint — autentikasi, envelope error, paginasi, rate limit — plus
     permukaan yang sudah dibangun, dan tidak lebih.
 
-    Path ditambahkan oleh item backlog yang memilikinya: `S1-082` `/auth/register`,
-    `S1-084` `/auth/verify-email` + `/auth/verify-email/resend`, `S1-016` resources,
-    `S1-024` ketersediaan, `S1-030` booking, dan seterusnya.
-    Menambahkan semuanya di muka mendahului keputusan desain yang justru jadi isi item-item
-    itu. `S1-008` menambahkan empat path auth; `S1-009` menambahkan `/settings` dan
-    `S1-010` menambahkan `/users` + `/users/{id}`.
+    Path ditambahkan oleh item backlog yang memilikinya: `S1-016` resources,
+    `S1-024` ketersediaan, `S1-030` booking, dan seterusnya. Menambahkan semuanya di muka
+    mendahului keputusan desain yang justru jadi isi item-item itu.
+
+    Yang sudah mendarat: `S1-008` empat path auth, `S1-009` `/settings`, `S1-010`
+    `/users` + `/users/{id}`, `S1-082` `/auth/register`, dan `S1-084`
+    `/auth/verify-email`, `/auth/verify-email/resend`, `/auth/accept-invitation`.
 
     Jadi berkas ini **kurang** dibanding `04-api-spec.md` §3–§8, bukan **bertentangan**
     dengannya. Aturan di `CLAUDE.md` tetap berlaku untuk apa pun yang dijelaskan dua-duanya:
@@ -45,6 +46,143 @@ security:
   - bearerAuth: []
 
 paths:
+
+  /auth/register:
+    post:
+      operationId: register
+      summary: Daftarkan usaha baru beserta pemiliknya
+      description: |
+        **Satu-satunya jalur yang menciptakan usaha.** `POST /users` tidak pernah
+        membuatnya — ia mengundang operator ke usaha yang sudah ada (BR-004).
+
+        Baris `owners` dan baris `users` ber-`role = 'owner'` terbit dalam satu transaksi.
+        Gagal di tengah tidak boleh meninggalkan usaha yang tidak bisa dimasuki siapa pun.
+
+        **`slug` tidak ditanyakan di sini.** Ia opsional, butuh paket `usaha` ke atas, dan
+        diisi belakangan dari `PATCH /settings` (BR-025). Tiap field di layar daftar adalah
+        tempat orang berhenti, dan memilih subdomain adalah keputusan yang belum bisa
+        diambil sebelum produknya terlihat.
+
+        Balasannya membawa sesi yang langsung jadi — pemilik tidak perlu login lagi. Tapi
+        ia mendarat di **dinding verifikasi**, bukan dashboard: sesinya diterbitkan justru
+        supaya ia bisa memanggil `resend` tanpa login ulang (BR-006).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Usaha dan pemiliknya terbit. Sesi ikut di dalamnya.
+          headers:
+            Set-Cookie:
+              description: Refresh token, httpOnly, Secure, SameSite=Lax, host-only.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /auth/verify-email:
+    post:
+      operationId: verifyEmail
+      summary: Tukar token verifikasi dengan email yang terverifikasi
+      description: |
+        Sekali pakai, umur 24 jam. Kedaluwarsa, sudah dipakai, atau tidak dikenal →
+        `422 verification-token-invalid`.
+
+        Tanpa autentikasi: tautannya dibuka dari surel, dan browser yang membukanya belum
+        tentu browser yang mendaftar. Tokennya sendiri yang jadi bukti.
+
+        Kedaluwarsa bukan jalan buntu — `resend` selalu tersedia (BR-006).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        "204":
+          description: Terverifikasi. `users.email_verified_at` terisi.
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /auth/verify-email/resend:
+    post:
+      operationId: resendVerification
+      summary: Kirim ulang surel verifikasi
+      description: |
+        Butuh sesi, bukan token verifikasi — pemanggilnya sudah login, cuma belum
+        terverifikasi. Itu sebabnya `POST /auth/register` membalas dengan sesi.
+
+        3 req/jam per pengguna (§7). **Selalu tersedia**: satu-satunya hal yang bisa
+        dilakukan akun yang belum terverifikasi adalah memverifikasi dirinya, jadi
+        menutup jalan ini berarti menutup satu-satunya jalan keluar (BR-006).
+      responses:
+        "204":
+          description: Surel dikirim ulang ke alamat terdaftar.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /auth/accept-invitation:
+    post:
+      operationId: acceptInvitation
+      summary: Terima undangan dan pasang password
+      description: |
+        Jalur yang membuat baris `users` ber-`status = 'invited'` dari `POST /users`
+        akhirnya bisa dipakai. Ia memasang `password_hash`, menyetel `status = 'active'`,
+        **dan mengisi `email_verified_at` sekaligus**.
+
+        Yang terakhir itu bukan jalan pintas: undangan hanya bisa diterima lewat tautan di
+        emailnya, jadi menerimanya **sudah** bukti kendali atas alamat itu. Mengirim surel
+        verifikasi kedua sesudah surel undangan adalah meminta bukti yang sama dua kali
+        (BR-004, BR-006).
+
+        Balasannya sesi yang langsung jadi, dan operator ini mendarat di dashboard — bukan
+        di dinding verifikasi, karena ia sudah melewatinya.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:
+                  type: string
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+      responses:
+        "200":
+          description: Undangan diterima. Akun aktif dan terverifikasi.
+          headers:
+            Set-Cookie:
+              description: Refresh token, httpOnly, Secure, SameSite=Lax, host-only.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
 
   /auth/login:
     post:
@@ -404,6 +542,52 @@ components:
           format: password
           minLength: 8
 
+    RegisterRequest:
+      type: object
+      description: |
+        Empat field, dan tidak lebih. Tiap satu yang ditambahkan adalah tempat orang
+        berhenti mengisi (BR-005).
+      required: [email, password, business_name, business_type]
+      properties:
+        email:
+          type: string
+          format: email
+          description: Unik di seluruh sistem, bukan per usaha (BR-004).
+          examples: ["budi@contoh.id"]
+        password:
+          type: string
+          format: password
+          minLength: 8
+        business_name:
+          type: string
+          minLength: 1
+          examples: ["Rental Budi"]
+        business_type:
+          $ref: "#/components/schemas/BusinessType"
+
+    BusinessType:
+      type: string
+      description: |
+        Preset pasar, dipilih sekali saat mendaftar. **Ia yang menentukan `pricing_unit`
+        seluruh resource pemilik itu** — juragan tidak pernah mengisi satuan harga di tiap
+        barang (BR-012, BR-017).
+
+        Enamnya ada di enum karena skema mengenal keenamnya, tapi **cuma dua yang dibuka di
+        fase 1**: `vehicle_rental` dan `equipment_rental`, dua-duanya bersatuan `day`.
+        `boarding_house` dan `apartment` fase 2, `venue` fase 3, `clinic` fase 4 — satuan
+        `clinic` sengaja belum diputuskan, bukan ditebak.
+
+        Layar daftar fase 1 karena itu merender **dua pilihan**, dengan bahasa juragan
+        ("rental mobil & motor", "rental alat"), bukan nama enum ini.
+      enum:
+        - vehicle_rental
+        - equipment_rental
+        - boarding_house
+        - apartment
+        - venue
+        - clinic
+      examples: ["vehicle_rental"]
+
     Session:
       type: object
       description: |
@@ -678,6 +862,8 @@ components:
         - email-taken
         - slug-taken
         - slug-invalid
+        - email-not-verified
+        - verification-token-invalid
 
     ProblemError:
       type: object

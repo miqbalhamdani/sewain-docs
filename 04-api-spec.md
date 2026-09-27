@@ -234,6 +234,7 @@ kurang; baris milik usaha lain tidak boleh bisa dibedakan dari baris yang tidak 
 | `POST` | `/auth/logout` | semua | BR-004 |
 | `POST` | `/auth/verify-email` | — | BR-006 |
 | `POST` | `/auth/verify-email/resend` | semua | BR-006 |
+| `POST` | `/auth/accept-invitation` | — | BR-004, BR-006 |
 | `GET` `PATCH` | `/me` | semua | BR-003, BR-004 |
 | `GET` `PATCH` | `/settings` 🔒 | owner | BR-024, BR-025, BR-027, BR-031, BR-038, BR-057, BR-070 |
 | `GET` `POST` | `/users` 🔒 | owner | BR-003, BR-004 |
@@ -364,6 +365,35 @@ di emailnya (BR-004), jadi menerimanya sudah bukti kendali atas alamat itu:
 Konsekuensi yang perlu diketahui frontend: **`403 email-not-verified` bisa muncul di
 endpoint mana pun**, jadi ia ditangani di lapisan klien HTTP sebagai pengalihan ke
 layar verifikasi — bukan sebagai toast di tiap layar.
+
+#### `POST /auth/accept-invitation` — jalur yang menghidupkan akun undangan
+
+`POST /users` menerbitkan baris ber-`status = 'invited'` tanpa password (§3.1 `/users`).
+Endpoint inilah yang membuatnya bisa dipakai. Body `{ "token": "…", "password": "…" }`,
+dan ia melakukan tiga hal sekaligus:
+
+| Yang disetel | Kenapa |
+|---|---|
+| `password_hash` | Undangan sengaja tidak pernah membawa password; yang diundang yang memilihnya |
+| `status = 'active'` | Dari `invited`. Tidak ada jalur lain yang keluar dari status itu |
+| `email_verified_at` | **Nol surel kedua** — lihat di bawah |
+
+Yang ketiga bukan jalan pintas. Undangan hanya bisa diterima lewat tautan di emailnya,
+jadi menerimanya **sudah** bukti kendali atas alamat itu — bukti yang sama persis yang
+dikejar surel verifikasi. Mengirimnya lagi sesudah surel undangan adalah meminta bukti
+yang sama dua kali, dan BR-006 menolaknya secara eksplisit.
+
+Balasannya `200` beserta sesi yang langsung jadi, dan operator ini **mendarat di
+dashboard** — bukan di dinding verifikasi, karena ia sudah melewatinya. Itu satu-satunya
+tempat perilakunya berbeda dari `POST /auth/register`.
+
+| Kondisi | Balasan |
+|---|---|
+| Token tidak dikenal, sudah dipakai, atau kedaluwarsa | `422 verification-token-invalid` |
+| Password di bawah 8 karakter | `422 validation-failed` |
+
+Tokennya hidup di Redis, bukan tabel — alasan yang sama dengan `Idempotency-Key`, lihat
+`03-erd.md` §4.
 
 #### Sesi & usaha (BR-004)
 

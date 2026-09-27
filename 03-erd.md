@@ -697,13 +697,14 @@ CREATE INDEX resource_units_owner_resource_status
 
 Empat baris ini adalah alasan tidak ada cron yang mengubah data di sistem ini.
 
-Tiga hal lain hidup **di luar PostgreSQL**, dan itu juga disengaja:
+Empat hal lain hidup **di luar PostgreSQL**, dan itu juga disengaja:
 
 | Bukan tabel | Tempatnya | Alasan |
 |---|---|---|
 | Kunci `Idempotency-Key` + respons tersimpannya (BR-090) | Redis, TTL 24 jam | Data yang mati sendiri tidak butuh baris yang harus dibersihkan |
 | Antrean, jadwal, dan status pekerjaan (BR-091) | Redis Streams (`S1-040`) | PostgreSQL sebagai broker antrean berarti `SELECT … FOR UPDATE SKIP LOCKED` yang harus dirawat sendiri |
 | Berkas hasil ekspor (BR-077) | R2, tautan bertanda tangan 15 menit | Laporan memuat data penyewa; berkas tanpa kedaluwarsa hidup selamanya di riwayat WhatsApp |
+| Token verifikasi email & undangan (BR-004, BR-006) | Redis, TTL 24 jam / 7 hari | Alasan yang sama dengan `Idempotency-Key`. Keduanya sekali pakai dan mati sendiri; tabelnya cuma akan menumpuk baris mati yang butuh job pembersih — dan `S1-059` sudah ditunda justru karena job pembersih itu mahal |
 
 Satu pengecualian yang perlu disebut: **`notifications` tetap tabel**, bukan cuma entri
 antrean. BR-072 mewajibkan kegagalan kirim terlihat di dashboard, dan antrean yang isinya
