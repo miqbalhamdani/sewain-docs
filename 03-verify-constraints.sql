@@ -1,10 +1,10 @@
--- Verifikasi 33 constraint sisa di 03-erd.md §3.
+-- Verifikasi 37 constraint sisa di 03-erd.md §3.
 -- Anti-bentrok (BR-022) TIDAK di sini — ia punya file sendiri:
 --   03-verify-overlap-constraint.sql
 --
 -- Jalankan di database KOSONG / scratch:
 --   createdb sewain_scratch && psql sewain_scratch -f docs/03-verify-constraints.sql
--- Harapan: 43 NOTICE "OK" constraint + 6 NOTICE "OK RLS", tanpa ERROR yang
+-- Harapan: 47 NOTICE "OK" constraint + 6 NOTICE "OK RLS", tanpa ERROR yang
 -- tidak tertangkap.
 -- Script diakhiri ROLLBACK, jadi tidak meninggalkan apa pun.
 --
@@ -35,11 +35,17 @@ CREATE TABLE users (
   status   text NOT NULL DEFAULT 'active'
 );
 
+-- resource_id SENGAJA nullable di harness ini walau skema sebenarnya NOT NULL:
+-- kasus 7-9 cuma menguji keunikan kode dan tidak butuh resource. FK komposit di
+-- bawah MATCH SIMPLE, jadi baris ber-resource_id NULL melewatinya -- dan itu yang
+-- membuat kasus 46 menguji pasangannya, bukan NOT NULL-nya.
 CREATE TABLE resource_units (
-  id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  owner_id   uuid NOT NULL,
-  code       text NOT NULL,
-  deleted_at timestamptz
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id    uuid NOT NULL,
+  resource_id uuid,
+  code        text NOT NULL,
+  status      text NOT NULL DEFAULT 'active',   -- BR-013
+  deleted_at  timestamptz
 );
 
 -- BR-016: kelima nominal NULLABLE (NULL = aturannya tidak berlaku).
@@ -47,13 +53,15 @@ CREATE TABLE resource_units (
 CREATE TABLE resources (
   id                       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_id                 uuid NOT NULL,
+  base_price               bigint  NOT NULL DEFAULT 0,
   pricing_unit             text    NOT NULL DEFAULT 'day',   -- BR-012, BR-017
   deposit_amount           bigint,
   late_fee_per_unit        bigint,
   min_duration             int,
   max_duration             int,
   buffer_minutes           int     NOT NULL DEFAULT 0,
-  requires_id_verification boolean NOT NULL DEFAULT false
+  requires_id_verification boolean NOT NULL DEFAULT false,
+  status                   text    NOT NULL DEFAULT 'active'   -- BR-010
 );
 
 CREATE TABLE bookings (
@@ -155,6 +163,21 @@ ALTER TABLE resources
     CHECK (min_duration IS NULL OR max_duration IS NULL
            OR max_duration >= min_duration),
   ADD CONSTRAINT resources_buffer_nonneg CHECK (buffer_minutes >= 0);
+
+-- BR-010 + BR-013: status asing tidak bikin error, ia bikin baris hilang diam-diam
+-- dari pencarian ketersediaan.
+ALTER TABLE resources ADD CONSTRAINT resources_status_valid
+  CHECK (status IN ('active', 'inactive'));
+ALTER TABLE resources ADD CONSTRAINT resources_base_price_nonneg
+  CHECK (base_price >= 0);
+ALTER TABLE resource_units ADD CONSTRAINT resource_units_status_valid
+  CHECK (status IN ('active', 'maintenance', 'retired'));
+
+-- BR-001: cek FK berjalan sebagai pemilik tabel dan MELEWATI RLS, jadi FK biasa ke
+-- resources(id) menerima id pemilik mana pun. Pasangkan kolomnya.
+ALTER TABLE resources ADD CONSTRAINT resources_id_owner_uq UNIQUE (id, owner_id);
+ALTER TABLE resource_units ADD CONSTRAINT resource_units_resource_matches_owner
+  FOREIGN KEY (resource_id, owner_id) REFERENCES resources (id, owner_id);
 
 -- BR-048 + BR-016. Versi lama (deposit_deducted <= deposit_amount) lolos DIAM-DIAM
 -- begitu deposit_amount nullable: CHECK yang bernilai NULL dianggap lolos.
@@ -262,7 +285,7 @@ CREATE INDEX bookings_unit_range ON bookings
   WHERE status IN ('reserved','picked_up') AND deleted_at IS NULL;
 CREATE INDEX bookings_owner_status_start ON bookings (owner_id, status, start_at);
 CREATE INDEX resource_units_owner_resource_status
-  ON resource_units (owner_id, code) WHERE deleted_at IS NULL;
+  ON resource_units (owner_id, resource_id, status) WHERE deleted_at IS NULL;
 
 -- ─────────────────────────────── kasus uji ───────────────────────────────
 
@@ -289,7 +312,7 @@ BEGIN
     INSERT INTO owners (slug) VALUES ('rentalbudi');
     RAISE EXCEPTION 'GAGAL: slug duplikat diterima';
   EXCEPTION WHEN unique_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - owners_slug_unique tolak duplikat', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - owners_slug_unique tolak duplikat', n;
   END;
 
   -- 2 · owners_slug_format: hyphen di ujung DAN huruf besar ditolak.
@@ -304,7 +327,7 @@ BEGIN
     INSERT INTO owners (slug) VALUES ('RentalBudi');
     RAISE EXCEPTION 'GAGAL: slug huruf besar diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - owners_slug_format tolak hyphen ujung & huruf besar', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - owners_slug_format tolak hyphen ujung & huruf besar', n;
   END;
 
   -- 3 · owners_slug_format: 2 karakter ditolak (minimum 3)
@@ -312,7 +335,7 @@ BEGIN
     INSERT INTO owners (slug) VALUES ('ab');
     RAISE EXCEPTION 'GAGAL: slug 2 karakter diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - owners_slug_format tolak < 3 karakter', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - owners_slug_format tolak < 3 karakter', n;
   END;
 
   -- 4 · owners_slug_not_punycode: xn-- ditolak
@@ -320,7 +343,7 @@ BEGIN
     INSERT INTO owners (slug) VALUES ('xn--80ak6aa92e');
     RAISE EXCEPTION 'GAGAL: slug punycode diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - owners_slug_not_punycode tolak xn--', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - owners_slug_not_punycode tolak xn--', n;
   END;
 
   -- 5 · owners_slug_not_reserved
@@ -328,12 +351,12 @@ BEGIN
     INSERT INTO owners (slug) VALUES ('api');
     RAISE EXCEPTION 'GAGAL: subdomain terlarang diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - owners_slug_not_reserved tolak "api"', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - owners_slug_not_reserved tolak "api"', n;
   END;
 
   -- 6 · slug sah tetap diterima (constraint tidak kebablasan)
   INSERT INTO owners (slug) VALUES ('rental-budi-2021');
-  n := n+1; RAISE NOTICE 'OK %/43 - slug sah tetap diterima', n;
+  n := n+1; RAISE NOTICE 'OK %/47 - slug sah tetap diterima', n;
 
   -- 7 · resource_units_code_per_owner: kode sama, owner sama → tolak
   INSERT INTO resource_units (owner_id, code) VALUES (o1, 'B 1234 XY');
@@ -341,17 +364,17 @@ BEGIN
     INSERT INTO resource_units (owner_id, code) VALUES (o1, 'B 1234 XY');
     RAISE EXCEPTION 'GAGAL: kode unit ganda pada satu owner diterima';
   EXCEPTION WHEN unique_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - kode unit unik per owner', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - kode unit unik per owner', n;
   END;
 
   -- 8 · owner lain boleh pakai kode yang sama
   INSERT INTO resource_units (owner_id, code) VALUES (o2, 'B 1234 XY');
-  n := n+1; RAISE NOTICE 'OK %/43 - owner lain boleh kode sama', n;
+  n := n+1; RAISE NOTICE 'OK %/47 - owner lain boleh kode sama', n;
 
   -- 9 · unit terhapus dikecualikan dari unique
   UPDATE resource_units SET deleted_at = now() WHERE owner_id = o2;
   INSERT INTO resource_units (owner_id, code) VALUES (o2, 'B 1234 XY');
-  n := n+1; RAISE NOTICE 'OK %/43 - partial index kecualikan deleted_at', n;
+  n := n+1; RAISE NOTICE 'OK %/47 - partial index kecualikan deleted_at', n;
 
   -- 10 · bookings_code_per_owner
   INSERT INTO bookings (id, owner_id, code, resource_unit_id, start_at, end_at,
@@ -365,7 +388,7 @@ BEGIN
             '2026-10-05 09:00+07', 'reserved');
     RAISE EXCEPTION 'GAGAL: kode booking ganda pada satu owner diterima';
   EXCEPTION WHEN unique_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - kode booking unik per owner', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - kode booking unik per owner', n;
   END;
 
   -- 11 · bookings_range_valid
@@ -376,7 +399,7 @@ BEGIN
             '2026-09-03 09:00+07', 'reserved');
     RAISE EXCEPTION 'GAGAL: end_at sebelum start_at diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - bookings_range_valid', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - bookings_range_valid', n;
   END;
 
   -- 12 · bookings_buffer_valid
@@ -387,7 +410,7 @@ BEGIN
             '2026-09-04 09:00+07', 'reserved');
     RAISE EXCEPTION 'GAGAL: end_at_with_buffer < end_at diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - bookings_buffer_valid', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - bookings_buffer_valid', n;
   END;
 
   -- 13 · bookings_deposit_nonneg: potongan > deposit ditolak
@@ -395,19 +418,19 @@ BEGIN
     UPDATE bookings SET deposit_amount = 500000, deposit_deducted = 700000 WHERE id = b1;
     RAISE EXCEPTION 'GAGAL: deposit_deducted melebihi deposit_amount diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - deposit tidak bisa dipotong lebih dari nilainya', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - deposit tidak bisa dipotong lebih dari nilainya', n;
   END;
 
   -- 14 · deposit habis persis (= amount) harus DITERIMA
   UPDATE bookings SET deposit_amount = 500000, deposit_deducted = 500000 WHERE id = b1;
-  n := n+1; RAISE NOTICE 'OK %/43 - deposit habis persis diterima', n;
+  n := n+1; RAISE NOTICE 'OK %/47 - deposit habis persis diterima', n;
 
   -- 15 · booking_counters FK ke owners
   BEGIN
     INSERT INTO booking_counters (owner_id) VALUES (u1);
     RAISE EXCEPTION 'GAGAL: booking_counters menerima owner_id asing';
   EXCEPTION WHEN foreign_key_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - booking_counters FK ke owners', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - booking_counters FK ke owners', n;
   END;
 
   -- 16 · handovers_one_per_direction
@@ -415,7 +438,7 @@ BEGIN
     INSERT INTO handovers (booking_id, direction) VALUES (b1, 'return');
     RAISE EXCEPTION 'GAGAL: dua handover arah sama pada satu booking diterima';
   EXCEPTION WHEN unique_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - satu handover per arah per booking', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - satu handover per arah per booking', n;
   END;
 
   -- 17 · invoices_one_subject: dua-duanya NULL ditolak
@@ -423,7 +446,7 @@ BEGIN
     INSERT INTO invoices (owner_id) VALUES (o1);
     RAISE EXCEPTION 'GAGAL: invoice tanpa subjek diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - invoices_one_subject tolak nol subjek', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - invoices_one_subject tolak nol subjek', n;
   END;
 
   -- 18 · invoices_one_subject: dua-duanya terisi ditolak; lalu satu subjek diterima
@@ -432,7 +455,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: invoice dua subjek diterima';
   EXCEPTION WHEN check_violation THEN
     INSERT INTO invoices (id, owner_id, booking_id) VALUES (i1, o1, b1);
-    n := n+1; RAISE NOTICE 'OK %/43 - invoices_one_subject tolak dua subjek', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - invoices_one_subject tolak dua subjek', n;
   END;
 
   -- 19 · invoice_lines_damage_needs_photo + invoice_lines_sign
@@ -442,7 +465,7 @@ BEGIN
   EXCEPTION WHEN check_violation THEN
     INSERT INTO invoice_lines (invoice_id, kind, amount, handover_photo_id)
     VALUES (i1, 'damage', 500000, ph);
-    n := n+1; RAISE NOTICE 'OK %/43 - baris damage wajib merujuk foto', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - baris damage wajib merujuk foto', n;
   END;
 
   BEGIN
@@ -450,7 +473,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: discount bernilai positif diterima';
   EXCEPTION WHEN check_violation THEN
     INSERT INTO invoice_lines (invoice_id, kind, amount) VALUES (i1, 'discount', -50000);
-    n := n+1; RAISE NOTICE 'OK %/43 - discount wajib negatif, rent wajib positif', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - discount wajib negatif, rent wajib positif', n;
   END;
 
   -- 20 · payments_one_success_per_invoice + notifications
@@ -460,7 +483,7 @@ BEGIN
     INSERT INTO payments (invoice_id, status) VALUES (i1, 'success');
     RAISE EXCEPTION 'GAGAL: dua pembayaran sukses pada satu invoice diterima';
   EXCEPTION WHEN unique_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - satu pembayaran sukses per invoice', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - satu pembayaran sukses per invoice', n;
   END;
 
   INSERT INTO notifications (booking_id, kind, scheduled_date, attempt_no)
@@ -495,7 +518,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: email yang sama diterima di usaha kedua';
   EXCEPTION WHEN unique_violation THEN
     INSERT INTO users (owner_id, email) VALUES (o2, 'sari@contoh.id');
-    n := n+1; RAISE NOTICE 'OK %/43 - email unik global, alamat lain tetap boleh', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - email unik global, alamat lain tetap boleh', n;
   END;
 
   -- 23 · refresh_tokens_user_matches_owner: token tidak bisa menunjuk usaha lain.
@@ -508,7 +531,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: refresh token ber-owner asing diterima';
   EXCEPTION WHEN foreign_key_violation THEN
     INSERT INTO refresh_tokens (owner_id, user_id, token_hash) VALUES (o1, us, 'h1');
-    n := n+1; RAISE NOTICE 'OK %/43 - refresh token wajib usaha yang sama dengan user', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - refresh token wajib usaha yang sama dengan user', n;
   END;
 
   -- ══ BR-016 · kosong berarti tidak berlaku; NOL dilarang ══
@@ -521,20 +544,20 @@ BEGIN
     INSERT INTO resources (owner_id, deposit_amount) VALUES (o1, 0);
     RAISE EXCEPTION 'GAGAL: deposit_amount = 0 diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - deposit_amount 0 ditolak (pakai NULL)', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - deposit_amount 0 ditolak (pakai NULL)', n;
   END;
 
   -- 25 · ...tapi NULL DITERIMA -- ini yang membuat "tanpa deposit" bisa ditulis
   INSERT INTO resources (owner_id, deposit_amount, late_fee_per_unit)
   VALUES (o1, NULL, NULL);
-  n := n+1; RAISE NOTICE 'OK %/43 - deposit & denda NULL diterima', n;
+  n := n+1; RAISE NOTICE 'OK %/47 - deposit & denda NULL diterima', n;
 
   -- 26 · resources_late_fee_positive: 0 ditolak
   BEGIN
     INSERT INTO resources (owner_id, late_fee_per_unit) VALUES (o1, 0);
     RAISE EXCEPTION 'GAGAL: late_fee_per_unit = 0 diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - late_fee_per_unit 0 ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - late_fee_per_unit 0 ditolak', n;
   END;
 
   -- 27 · resources_min_duration_positive: 0 ditolak
@@ -542,7 +565,7 @@ BEGIN
     INSERT INTO resources (owner_id, min_duration) VALUES (o1, 0);
     RAISE EXCEPTION 'GAGAL: min_duration = 0 diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - min_duration 0 ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - min_duration 0 ditolak', n;
   END;
 
   -- 28 · resources_max_duration_positive: 0 ditolak
@@ -550,7 +573,7 @@ BEGIN
     INSERT INTO resources (owner_id, max_duration) VALUES (o1, 0);
     RAISE EXCEPTION 'GAGAL: max_duration = 0 diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - max_duration 0 ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - max_duration 0 ditolak', n;
   END;
 
   -- 29 · resources_duration_order: max < min ditolak; satu sisi kosong diterima
@@ -559,7 +582,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: max_duration < min_duration diterima';
   EXCEPTION WHEN check_violation THEN
     INSERT INTO resources (owner_id, min_duration, max_duration) VALUES (o1, 7, NULL);
-    n := n+1; RAISE NOTICE 'OK %/43 - max < min ditolak, batas sepihak diterima', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - max < min ditolak, batas sepihak diterima', n;
   END;
 
   -- 30 · resources_buffer_nonneg: negatif ditolak
@@ -567,7 +590,7 @@ BEGIN
     INSERT INTO resources (owner_id, buffer_minutes) VALUES (o1, -1);
     RAISE EXCEPTION 'GAGAL: buffer_minutes negatif diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - buffer_minutes negatif ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - buffer_minutes negatif ditolak', n;
   END;
 
   -- 31 · bookings_deposit_nonneg: booking TANPA deposit tidak boleh punya potongan.
@@ -583,7 +606,7 @@ BEGIN
             '2026-09-05 09:00+07', 'reserved', NULL, 100000);
     RAISE EXCEPTION 'GAGAL: potongan pada booking tanpa deposit diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - tanpa deposit, potongan ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - tanpa deposit, potongan ditolak', n;
   END;
 
   -- 32 · bookings_deposit_waiver_complete: dibebaskan tanpa alasan ditolak
@@ -592,14 +615,14 @@ BEGIN
     WHERE id = b1;
     RAISE EXCEPTION 'GAGAL: pembebasan tanpa alasan diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - pembebasan wajib berasalan', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - pembebasan wajib berasalan', n;
   END;
 
   -- 33 · ...bertiga lengkap DITERIMA
   UPDATE bookings SET deposit_waived_at = now(), deposit_waived_by = u1,
                       deposit_waiver_reason = 'pelanggan lama, disepakati pemilik'
   WHERE id = b1;
-  n := n+1; RAISE NOTICE 'OK %/43 - pembebasan lengkap diterima', n;
+  n := n+1; RAISE NOTICE 'OK %/47 - pembebasan lengkap diterima', n;
 
   -- ══ BR-024 · prefix kode booking milik pemilik ══
   -- Kode ini dibacakan lewat telepon. Format dijaga database supaya tidak ada
@@ -611,7 +634,7 @@ BEGIN
     INSERT INTO owners (slug, booking_code_prefix) VALUES ('rental-kecil', 'rb');
     RAISE EXCEPTION 'GAGAL: prefix huruf kecil diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - prefix huruf kecil ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - prefix huruf kecil ditolak', n;
   END;
 
   -- 35 · ...lebih dari 6 karakter ditolak; 6 karakter DITERIMA
@@ -620,7 +643,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: prefix 7 karakter diterima';
   EXCEPTION WHEN check_violation THEN
     INSERT INTO owners (slug, booking_code_prefix) VALUES ('rental-enam', 'MTR999');
-    n := n+1; RAISE NOTICE 'OK %/43 - prefix 7 karakter ditolak, 6 diterima', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - prefix 7 karakter ditolak, 6 diterima', n;
   END;
 
   -- ══ BR-012 + BR-017 · satuan harga & preset pasar ══
@@ -633,7 +656,7 @@ BEGIN
     INSERT INTO resources (owner_id, pricing_unit) VALUES (o1, 'bulan');
     RAISE EXCEPTION 'GAGAL: pricing_unit asing diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - pricing_unit asing ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - pricing_unit asing ditolak', n;
   END;
 
   -- 37 · ...dan yang TIDAK dikirim jatuh ke 'day', bukan NULL
@@ -641,14 +664,14 @@ BEGIN
   IF (SELECT pricing_unit FROM resources WHERE id = r_id) IS DISTINCT FROM 'day' THEN
     RAISE EXCEPTION 'GAGAL: pricing_unit tanpa nilai tidak jatuh ke day';
   END IF;
-  n := n+1; RAISE NOTICE 'OK %/43 - pricing_unit default day, bukan NULL', n;
+  n := n+1; RAISE NOTICE 'OK %/47 - pricing_unit default day, bukan NULL', n;
 
   -- 38 · owners_business_type_valid: preset asing ditolak
   BEGIN
     INSERT INTO owners (slug, business_type) VALUES ('rental-warung', 'warung');
     RAISE EXCEPTION 'GAGAL: business_type asing diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - business_type asing ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - business_type asing ditolak', n;
   END;
 
   -- 39 · BR-025 · slug NULL diterima, dan BANYAK slug NULL tidak saling tabrakan.
@@ -657,7 +680,7 @@ BEGIN
   --      keempat CHECK slug lolos saat NULL, dan unique index tidak menganggap dua
   --      NULL sebagai duplikat.
   INSERT INTO owners (slug) VALUES (NULL), (NULL);
-  n := n+1; RAISE NOTICE 'OK %/43 - slug NULL diterima, dua NULL tidak tabrakan', n;
+  n := n+1; RAISE NOTICE 'OK %/47 - slug NULL diterima, dua NULL tidak tabrakan', n;
 
   -- ══ BR-057 · tenggat bayar & toleransi no-show ══
 
@@ -666,7 +689,7 @@ BEGIN
     INSERT INTO owners (slug, payment_due_hours) VALUES ('rental-noljam', 0);
     RAISE EXCEPTION 'GAGAL: payment_due_hours = 0 diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - payment_due_hours 0 ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - payment_due_hours 0 ditolak', n;
   END;
 
   -- 41 · owners_no_show_tolerance_nonneg: negatif ditolak, tapi 0 DITERIMA
@@ -675,7 +698,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: no_show_tolerance_hours negatif diterima';
   EXCEPTION WHEN check_violation THEN
     INSERT INTO owners (slug, no_show_tolerance_hours) VALUES ('rental-ketat', 0);
-    n := n+1; RAISE NOTICE 'OK %/43 - toleransi negatif ditolak, 0 diterima', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - toleransi negatif ditolak, 0 diterima', n;
   END;
 
   -- ══ BR-073 · korelasi webhook WhatsApp ══
@@ -691,18 +714,62 @@ BEGIN
     VALUES (b1, 'return_reminder', '2026-09-10', 'wamid.HBgN123');
     RAISE EXCEPTION 'GAGAL: provider_message_id ganda diterima';
   EXCEPTION WHEN unique_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/43 - wamid ganda ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/47 - wamid ganda ditolak', n;
   END;
 
   -- 43 · ...tapi banyak NULL boleh berdampingan (belum terkirim)
   INSERT INTO notifications (booking_id, kind, scheduled_date)
   VALUES (b1, 'invoice_link', '2026-09-11'), (b1, 'payment_due_reminder', '2026-09-11');
-  n := n+1; RAISE NOTICE 'OK %/43 - banyak wamid NULL berdampingan', n;
+  n := n+1; RAISE NOTICE 'OK %/47 - banyak wamid NULL berdampingan', n;
 
-  IF n <> 43 THEN
-    RAISE EXCEPTION 'GAGAL: hanya % dari 43 kasus terhitung', n;
+  -- ══ BR-010 + BR-013 · status katalog, dan siapa pemilik jenis barangnya ══
+
+  -- 44 · resources_status_valid: nilai asing ditolak
+  BEGIN
+    INSERT INTO resources (owner_id, status) VALUES (o1, 'draft');
+    RAISE EXCEPTION 'GAGAL: status resource asing diterima';
+  EXCEPTION WHEN check_violation THEN
+    n := n+1; RAISE NOTICE 'OK %/47 - status resource asing ditolak', n;
+  END;
+
+  -- 45 · resource_units_status_valid: 'rusak' ditolak, ketiga nilai sah diterima.
+  --      Sisi kedua penting: constraint yang menolak 'maintenance' akan lolos
+  --      kasus pertama dan menghancurkan BR-013 tanpa satu pun test merah.
+  BEGIN
+    INSERT INTO resource_units (owner_id, code, status) VALUES (o1, 'B 9 RUSAK', 'rusak');
+    RAISE EXCEPTION 'GAGAL: status unit asing diterima';
+  EXCEPTION WHEN check_violation THEN
+    INSERT INTO resource_units (owner_id, code, status)
+    VALUES (o1, 'B 1 AKTIF', 'active'), (o1, 'B 2 BENGKEL', 'maintenance'),
+           (o1, 'B 3 PENSIUN', 'retired');
+    n := n+1; RAISE NOTICE 'OK %/47 - status unit asing ditolak, ketiganya diterima', n;
+  END;
+
+  -- 46 · resource_units_resource_matches_owner: unit o2 tidak bisa menunjuk
+  --      resource milik o1. r_id dibuat di kasus 37 dan milik o1.
+  INSERT INTO resource_units (owner_id, resource_id, code) VALUES (o1, r_id, 'B 4 SAH');
+  BEGIN
+    INSERT INTO resource_units (owner_id, resource_id, code) VALUES (o2, r_id, 'B 5 CURI');
+    RAISE EXCEPTION 'GAGAL: unit menunjuk resource pemilik lain diterima';
+  EXCEPTION WHEN foreign_key_violation THEN
+    n := n+1; RAISE NOTICE 'OK %/47 - unit tidak bisa menunjuk resource pemilik lain', n;
+  END;
+
+  -- 47 · resources_base_price_nonneg: negatif ditolak, NOL diterima.
+  --      Sisi kedua yang penting: constraint '> 0' akan lolos kasus pertama dan
+  --      diam-diam melarang barang pelengkap gratis.
+  BEGIN
+    INSERT INTO resources (owner_id, base_price) VALUES (o1, -1);
+    RAISE EXCEPTION 'GAGAL: base_price negatif diterima';
+  EXCEPTION WHEN check_violation THEN
+    INSERT INTO resources (owner_id, base_price) VALUES (o1, 0);
+    n := n+1; RAISE NOTICE 'OK %/47 - base_price negatif ditolak, 0 diterima', n;
+  END;
+
+  IF n <> 47 THEN
+    RAISE EXCEPTION 'GAGAL: hanya % dari 47 kasus terhitung', n;
   END IF;
-  RAISE NOTICE '--- 43/43 kasus, 33 constraint 03-erd.md §3 terverifikasi ---';
+  RAISE NOTICE '--- 47/47 kasus, 37 constraint 03-erd.md §3 terverifikasi ---';
 END $$;
 
 -- ══════════════════ BR-001 · isolasi pemilik ditegakkan database ══════════════════

@@ -532,6 +532,35 @@ ALTER TABLE resources
   ALTER COLUMN requires_id_verification SET DEFAULT false,
   ADD CONSTRAINT resources_buffer_nonneg CHECK (buffer_minutes >= 0);
 
+-- BR-013 + BR-010: status menentukan apakah barisnya ikut dihitung. Unit di luar
+-- 'active' hilang dari pencarian ketersediaan, dan resource 'inactive' tidak
+-- ditawarkan lagi. Nilai asing tidak menghasilkan error di mana pun -- ia
+-- menghasilkan baris yang lenyap diam-diam, mode gagal yang sama persis dengan
+-- yang dihapus BR-012 dari pricing_unit.
+ALTER TABLE resources ADD CONSTRAINT resources_status_valid
+  CHECK (status IN ('active', 'inactive'));
+ALTER TABLE resource_units ADD CONSTRAINT resource_units_status_valid
+  CHECK (status IN ('active', 'maintenance', 'retired'));
+
+-- Harga dasar tidak pernah negatif: tagihan negatif adalah kelas kesalahan yang
+-- sama dengan yang ditutup seluruh blok di atas. NOL DITERIMA, dan bedanya dengan
+-- keempat nominal BR-016 ada di NOT NULL-nya -- kolom ini tidak punya NULL yang
+-- bisa tertukar dengan 0, jadi "gratis" cuma punya satu cara ditulis.
+ALTER TABLE resources ADD CONSTRAINT resources_base_price_nonneg
+  CHECK (base_price >= 0);
+
+-- BR-001 + BR-010: unit TIDAK BISA menunjuk resource milik pemilik lain.
+-- RLS saja tidak menutup ini: cek foreign key berjalan sebagai pemilik tabel dan
+-- MELEWATI policy, jadi FK sederhana ke resources(id) akan menerima id pemilik
+-- mana pun. Akibatnya unit yang terbaca oleh A tapi jenis barangnya milik B --
+-- dan booking yang lahir darinya men-snapshot harga milik B (BR-014).
+-- Pola dan alasannya sama persis dengan refresh_tokens_user_matches_owner:
+-- pasangkan kolomnya, jangan andalkan disiplin aplikasi. Butuh UNIQUE
+-- (id, owner_id) di resources sebagai target, walau id sendiri sudah PK.
+ALTER TABLE resources ADD CONSTRAINT resources_id_owner_uq UNIQUE (id, owner_id);
+ALTER TABLE resource_units ADD CONSTRAINT resource_units_resource_matches_owner
+  FOREIGN KEY (resource_id, owner_id) REFERENCES resources (id, owner_id);
+
 -- BR-021: rentang harus masuk akal.
 ALTER TABLE bookings
   ADD CONSTRAINT bookings_range_valid CHECK (end_at > start_at),
@@ -722,6 +751,9 @@ sudah lewat tidak bisa menjawab "kenapa pengingat Selasa lalu tidak terkirim".
 | `notifications`, `audit_logs` baru | BR-072 (kegagalan harus terlihat) dan BR-085 (akses identitas tercatat) tidak punya tempat menyimpan di §6. |
 | `bookings.buffer_minutes` ikut di-snapshot | BR-015 + BR-014: mengubah buffer di resource tidak boleh menggeser `end_at_with_buffer` booking lama. |
 | `bookings.expires_at` | BR-027: ambang per pemilik, jadi tidak bisa dihitung sebagai `created_at + 24 jam` yang di-hardcode. |
+| `resources.description` **dihapus** | PRD §6.2 memuatnya, §1 di atas tidak, dan `S1-014` harus memilih salah satu. Yang menang §1: nama, kategori, dan foto sudah menjawab "barang apa ini", dan kolom teks bebas yang tidak dirender di mana pun cuma menunggu diisi lalu dilupakan. Tambahkan kembali ketika ada layar yang menampilkannya. |
+| `resources.status`, `resource_units.status` dapat CHECK | Keduanya cuma prosa di §1 sampai `S1-014`. Status yang tidak sah tidak menghasilkan error, ia menghasilkan baris yang hilang dari pencarian ketersediaan (BR-013) — jenis kegagalan yang persis sama dengan `pricing_unit` sebelum BR-012 menegakkannya. |
+| `resource_units_resource_matches_owner` (FK komposit) | Cek foreign key berjalan sebagai pemilik tabel dan melewati RLS, jadi FK biasa ke `resources(id)` menerima id pemilik mana pun (BR-001). |
 
 ---
 

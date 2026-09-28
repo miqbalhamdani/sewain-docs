@@ -5,7 +5,7 @@
 --   A. policy USING saja      -> menulis baris pemilik lain BERHASIL  (lubangnya)
 --   B. policy USING + CHECK   -> menulis baris pemilik lain DITOLAK   (tambalannya)
 --
--- Kalau paruh A ikut menolak, berarti kasus RLS 5/5 di 03-verify-constraints.sql
+-- Kalau paruh A ikut menolak, berarti kasus RLS 5/6 di 03-verify-constraints.sql
 -- lulus karena sebab lain dan tidak membuktikan apa pun.
 --
 -- Jalankan di database scratch; diakhiri ROLLBACK.
@@ -55,7 +55,7 @@ BEGIN
 
   IF NOT bocor THEN
     RAISE EXCEPTION
-      'TIDAK KONKLUSIF: USING-saja ikut menolak INSERT. Kasus RLS 5/5 lulus karena sebab lain.';
+      'TIDAK KONKLUSIF: USING-saja ikut menolak INSERT. Kasus RLS 5/6 lulus karena sebab lain.';
   END IF;
 
   SELECT count(*) INTO c FROM probe_a WHERE owner_id = o2;

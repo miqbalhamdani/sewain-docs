@@ -218,12 +218,54 @@ bisa dihubungi, dan `S1-001` menyediakannya dari mesin developer sendiri.
 
 | ID | Item | Repo | Depends | Acceptance | Status | Owner |
 |---|---|---|---|---|---|---|
-| S1-014 | Skema `resources` | BE | 007 | Sesuai `03-erd.md`; jenis barang terpisah dari unit fisiknya (BR-010); `pricing_unit` `NOT NULL DEFAULT 'day'` **dengan CHECK enum** — `INSERT` tanpa nilai jatuh ke `day` bukan `NULL`, dan `'bulan'` **ditolak database**; ikut di-snapshot ke booking (BR-012, BR-017); `buffer_minutes` default 0 dan bisa diubah — tidak di-hardcode (BR-015) **Kelima nominal nullable dan `0` ditolak database** — `deposit_amount`, `late_fee_per_unit`, `min_duration`, `max_duration` (BR-016); `buffer_minutes` `NOT NULL DEFAULT 0`; `requires_id_verification` `NOT NULL DEFAULT false`; `max < min` ditolak | todo | |
-| S1-015 | Skema `resource_units` + unique `code` per owner | BE | 014 | Dua unit dengan kode sama pada satu owner ditolak; owner lain boleh pakai kode itu (BR-011) | todo | |
-| S1-016 | Resources CRUD | BE | 014 | Ubah `base_price` tidak menyentuh booking mana pun; respons menyebut jumlah booking berjalan (BR-014) ; `pricing_unit` **diisi server dari `owners.business_type`** — dikirim klien → `422` (BR-017); resource tanpa deposit/denda/batas durasi bisa disimpan, dan `PATCH` dengan `null` **mencabut** nilai yang sudah ada (BR-016) | todo | |
-| S1-017 | Units CRUD + peringatan booking terdampak | BE | 015 | Set `maintenance` mengembalikan `200` + daftar booking terdampak, tidak menghapus & tidak membatalkan (BR-013) | todo | |
-| S1-018 | Layar resource: daftar, editor, harga & deposit | FE | 016 | **Tidak ada pemilih satuan harga di form** — preset fase 1 cuma punya satu satuan (BR-017); field harga, deposit, dan denda tidak dirender untuk `operator` (BR-003); prompt saat meninggalkan perubahan belum tersimpan | todo | |
-| S1-019 | Layar unit: daftar per resource, ubah status | FE | 017 | Mengubah unit ke `maintenance` menampilkan daftar booking terdampak dan meminta konfirmasi — bukan menolak, bukan membatalkan (BR-013) | todo | |
+| S1-014 | Skema `resources` | BE | 007 | Sesuai `03-erd.md`; jenis barang terpisah dari unit fisiknya (BR-010); `pricing_unit` `NOT NULL DEFAULT 'day'` **dengan CHECK enum** — `INSERT` tanpa nilai jatuh ke `day` bukan `NULL`, dan `'bulan'` **ditolak database**; ikut di-snapshot ke booking (BR-012, BR-017); `buffer_minutes` default 0 dan bisa diubah — tidak di-hardcode (BR-015) **Keempat nominal nullable dan `0` ditolak database** — `deposit_amount`, `late_fee_per_unit`, `min_duration`, `max_duration` (BR-016); `buffer_minutes` `NOT NULL DEFAULT 0`; `requires_id_verification` `NOT NULL DEFAULT false`; `max < min` ditolak | done | |
+| S1-015 | Skema `resource_units` + unique `code` per owner | BE | 014 | Dua unit dengan kode sama pada satu owner ditolak; owner lain boleh pakai kode itu (BR-011) | done | |
+| S1-016 | Resources CRUD | BE | 014 | Ubah `base_price` tidak menyentuh booking mana pun; respons menyebut jumlah booking berjalan (BR-014) ; `pricing_unit` **diisi server dari `owners.business_type`** — dikirim klien → `422` (BR-017); resource tanpa deposit/denda/batas durasi bisa disimpan, dan `PATCH` dengan `null` **mencabut** nilai yang sudah ada (BR-016) | done | |
+| S1-017 | Units CRUD + peringatan booking terdampak | BE | 015 | Set `maintenance` mengembalikan `200` + daftar booking terdampak, tidak menghapus & tidak membatalkan (BR-013) | done | |
+| S1-018 | Layar resource: daftar, editor, harga & deposit | FE | 016 | **Tidak ada pemilih satuan harga di form** — preset fase 1 cuma punya satu satuan (BR-017); field harga, deposit, dan denda tidak dirender untuk `operator` (BR-003); prompt saat meninggalkan perubahan belum tersimpan | done | |
+| S1-019 | Layar unit: daftar per resource, ubah status | FE | 017 | Mengubah unit ke `maintenance` menampilkan daftar booking terdampak dan meminta konfirmasi — bukan menolak, bukan membatalkan (BR-013) | done | |
+
+> **M1 tuntas, enam dari enam** — dan `docs/03-verify-constraints.sql` ternyata sudah memuat
+> harness beserta 12 kasus uji untuk kedua tabel ini jauh sebelum item-nya dikerjakan. `S1-014`
+> dan `S1-015` karena itu menyalin DDL yang sudah tertulis, bukan mendesainnya.
+>
+> **Empat cacat kontrak yang ketemu saat menelusuri, semuanya diperbaiki di sini:**
+>
+> | Cacat | Perbaikan |
+> |---|---|
+> | `04-api-spec.md` §3.2 menulis `/resources/{id}` "🔒 untuk harga & deposit", menyiratkan operator boleh mengubah nama barang. `internal/auth/roles.go` — satu-satunya definisi matriks BR-003 — tidak pernah memberinya `resources:write` | Kolom Peran jadi "GET semua; PATCH/DELETE 🔒", plus paragraf yang menjelaskan cek `pricing:write` yang menumpang di atasnya |
+> | §3.2 menghitung `requires_id_verification` sebagai "field kelima yang boleh `null`", padahal ERD dan skrip bukti sama-sama `NOT NULL DEFAULT false` | Jadi **empat**, dengan alasannya ditulis |
+> | `03-verify-constraints.sql` membuat `resource_units_owner_resource_status` sebagai `(owner_id, code)` — kolom identik dengan unique index di atasnya, jadi membuktikan nol. ERD menulis `(owner_id, resource_id, status)` | Harness ikut ERD |
+> | `03-verify-with-check.sql` masih menulis "kasus RLS 5/5" sejak sebelum M0 | 5/6 |
+>
+> **Tiga constraint ditambahkan di luar yang tertulis di ERD §3,** dan skrip bukti tumbuh
+> **43 → 47** karenanya: dua CHECK enum status (`resources_status_valid`,
+> `resource_units_status_valid`), FK komposit `resource_units_resource_matches_owner`, dan
+> `resources_base_price_nonneg`. Yang ketiga paling perlu dibaca ulang kalau tidak setuju —
+> **cek FK berjalan sebagai pemilik tabel dan melewati RLS**, jadi FK biasa ke `resources(id)`
+> menerima id pemilik mana pun; unit itu akan terbaca oleh A sementara jenis barangnya milik B,
+> dan booking yang lahir darinya men-snapshot harga B (BR-001, BR-014). Polanya disalin dari
+> `refresh_tokens_user_matches_owner`.
+>
+> **Dua field terbit kosong sampai M2, dan itu disengaja.** `active_bookings` pada
+> `PATCH /resources/{id}` dan `warning.affected_bookings` pada `PATCH /units/{id}` keduanya
+> `0`/`[]` sampai `S1-022` membuat tabel `bookings`. Bentuk responsnya mendarat sekarang supaya
+> layar `S1-018`/`S1-019` ditulis sekali; yang menyusul cuma isi query-nya, bukan pemanggilnya.
+>
+> **Dua bug yang cuma ketemu dengan menjalankan, bukan membaca:** CHECK enum status ditulis
+> inline di `CREATE TABLE`, jadi PostgreSQL menamainya sendiri (`resources_status_check`) dan
+> `translate()` yang mencocokkan nama meleset — `500` di tempat kontrak menjanjikan `422`. Dan
+> pesan `Problem.detail` dari `internal/catalog` berbahasa Inggris seperti seluruh
+> `platform/errors`, lalu dirender apa adanya ke form yang seluruhnya Indonesia; kata-katanya
+> sekarang milik layar, pola yang sama dengan `email-taken` di `(auth)/register`.
+>
+> **Celah kontrak yang sengaja TIDAK diputuskan di sini.** `04-api-spec.md` §3.6 mewajibkan
+> odometer saat pengambilan "bila resource bermeter", tapi tidak ada penanda `is_metered` di
+> mana pun — `meter_value` justru kolom di `resource_units`, yang baru terisi sesudah
+> serah-terima pertama. `S1-015` memang momen termurah memutuskannya, dan menebaknya berarti
+> menambah kolom yang mungkin salah ke tabel yang seluruh M2 sudah telanjur menunjuknya.
+> **Milik `S1-035`.**
+
 
 ---
 

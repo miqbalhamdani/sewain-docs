@@ -16,7 +16,9 @@ info:
 
     Yang sudah mendarat: `S1-008` empat path auth, `S1-009` `/settings`, `S1-010`
     `/users` + `/users/{id}`, `S1-082` `/auth/register`, dan `S1-084`
-    `/auth/verify-email`, `/auth/verify-email/resend`, `/auth/accept-invitation`.
+    `/auth/verify-email`, `/auth/verify-email/resend`, `/auth/accept-invitation`,
+    dan `S1-016`/`S1-017` `/resources`, `/resources/{id}`, `/resources/{id}/units`,
+    `/units/{id}`.
 
     Jadi berkas ini **kurang** dibanding `04-api-spec.md` §3–§8, bukan **bertentangan**
     dengannya. Aturan di `CLAUDE.md` tetap berlaku untuk apa pun yang dijelaskan dua-duanya:
@@ -455,6 +457,272 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /resources:
+    get:
+      operationId: listResources
+      summary: Jenis barang di usaha ini
+      description: |
+        Jenis barang, bukan unit fisiknya (BR-010). Operator ikut membacanya — seluruh
+        pekerjaannya, dari booking sampai serah-terima, menunjuk katalog ini.
+      responses:
+        "200":
+          description: Jenis barang di usaha ini.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Resource"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+    post:
+      operationId: createResource
+      summary: Daftarkan jenis barang baru
+      description: |
+        Hanya peran `owner` (`resources:write`).
+
+        **`pricing_unit` tidak ada di body dan memang tidak bisa dikirim.** Server
+        mengisinya dari `owners.business_type` saat barisnya dibuat (BR-012, BR-017),
+        dan karena ia tidak terdaftar di `ResourceCreate`, klien yang digenerate tidak
+        punya field-nya sama sekali — penolakan di waktu kompilasi, bukan `422`.
+
+        Empat nominal boleh `null` atau dihilangkan, dan dua-duanya berarti aturannya
+        tidak berlaku untuk barang ini. **`0` ditolak database** (BR-016).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResourceCreate"
+      responses:
+        "201":
+          description: Jenis barang terbit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resource"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /resources/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      operationId: getResource
+      summary: Satu jenis barang
+      responses:
+        "200":
+          description: Jenis barang itu.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Resource"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      operationId: updateResource
+      summary: Ubah jenis barang
+      description: |
+        Hanya peran `owner` (`resources:write`). Field `base_price`, `deposit_amount`,
+        dan `late_fee_per_unit` butuh **`pricing:write`** di atas itu — BR-003 menyebut
+        nominalnya, bukan endpoint-nya.
+
+        **Mengubah harga tidak menyentuh booking mana pun** (BR-014). Responsnya
+        menyebut berapa booking berjalan yang tetap memakai harga lama, supaya pemilik
+        tidak perlu menebak.
+
+        Untuk keempat nominal, **`null` eksplisit adalah satu-satunya cara mencabut**
+        nilai yang sudah ada; menghilangkan key-nya membiarkan nilainya apa adanya.
+        Itu pengecualian yang disengaja terhadap konvensi "`null` eksplisit = `422`",
+        yang berlaku untuk field yang dikelola server.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResourceUpdate"
+      responses:
+        "200":
+          description: Jenis barang sesudah diubah, beserta dampaknya ke booking.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResourceUpdated"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+    delete:
+      operationId: deleteResource
+      summary: Hapus jenis barang
+      description: |
+        Hanya peran `owner` (`records:delete`) — BR-003 melarang operator menghapus
+        apa pun, dan itu sebagian besar alasan seorang juragan mau membagikan akun.
+
+        Soft delete: `deleted_at` terisi, barisnya tetap ada. Booking lama menunjuk
+        snapshot-nya sendiri (BR-014), jadi riwayat tetap terbaca.
+      responses:
+        "204":
+          description: Jenis barang terhapus. Barisnya tetap ada.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /resources/{id}/units:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      operationId: listUnits
+      summary: Unit fisik dari satu jenis barang
+      description: |
+        Tiga Avanza adalah satu `Resource` dan tiga `ResourceUnit` — booking selalu
+        menunjuk satu unit, tidak pernah hanya jenisnya (BR-010).
+      responses:
+        "200":
+          description: Unit fisik jenis barang itu.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ResourceUnit"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    post:
+      operationId: createUnit
+      summary: Tambah unit fisik
+      description: |
+        Hanya peran `owner` (`units:write`).
+
+        `code` **dikirim klien** — plat nomor atau nomor seri, yang dipakai operator
+        mengenali barangnya secara fisik (BR-011). Jangan tertukar dengan
+        `bookings.code`, yang dihasilkan server dari pencacah.
+
+        Kode yang sudah dipakai di usaha ini dibalas `422` dengan `errors[].field`
+        bernilai `code`. Usaha lain boleh memakai kode yang sama.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnitCreate"
+      responses:
+        "201":
+          description: Unit terbit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResourceUnit"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /units/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    patch:
+      operationId: updateUnit
+      summary: Ubah unit, termasuk statusnya
+      description: |
+        Hanya peran `owner` (`units:write`).
+
+        **Mengubah status ke `maintenance` atau `retired` tidak menghapus dan tidak
+        membatalkan booking yang sudah ada** untuk unit itu. Responsnya `200` beserta
+        daftar booking terdampak, dan pemilik yang memutuskan (BR-013). Menolak
+        perubahannya berarti memaksa juragan membatalkan sendiri satu per satu sebelum
+        boleh bilang mobilnya di bengkel.
+
+        Unit di luar `active` hilang dari pencarian ketersediaan, tapi tetap punya
+        lajur `maintenance` di kalender; `retired` tidak punya lajur sama sekali.
+
+        Tidak ada `GET /units/{id}` — daftarnya dibaca lewat jenis barangnya.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnitUpdate"
+      responses:
+        "200":
+          description: Unit sesudah diubah, beserta peringatannya.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnitUpdated"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+    delete:
+      operationId: deleteUnit
+      summary: Hapus unit
+      description: |
+        Hanya peran `owner` (`records:delete`). Soft delete, dan kodenya kembali bisa
+        dipakai — unique index-nya `WHERE deleted_at IS NULL` (BR-011).
+      responses:
+        "204":
+          description: Unit terhapus. Barisnya tetap ada.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+
 components:
 
   securitySchemes:
@@ -842,6 +1110,334 @@ components:
             `invited` tidak ada di sini — ia dikelola server dan cuma berlaku sebelum
             undangannya diterima.
           enum: [active, disabled]
+
+    PricingUnit:
+      type: string
+      description: |
+        Satuan harga. **Diisi server dari `owners.business_type`, tidak pernah dikirim
+        klien** (BR-012, BR-017) — karena itu ia ada di `Resource` tapi tidak di
+        `ResourceCreate` maupun `ResourceUpdate`.
+
+        Ia dipakai dua kali di perhitungan uang: `duration_qty`, dan rumus denda telat
+        `ceil(kelebihan / pricing_unit)` (BR-046). Nilai asing bukan data kotor, ia
+        tagihan yang salah — jadi keempatnya juga ditegakkan CHECK di database.
+
+        Fase 1 selalu `day`: kedua preset yang dibuka (`vehicle_rental`,
+        `equipment_rental`) cuma punya satu satuan, jadi juragan rental tidak pernah
+        melihat field satuan harga di layar mana pun.
+      enum: [hour, day, week, month]
+
+    ResourceStatus:
+      type: string
+      description: |
+        `inactive` berarti barang itu tidak ditawarkan lagi tanpa menghapus riwayatnya.
+      enum: [active, inactive]
+
+    UnitStatus:
+      type: string
+      description: |
+        Hanya `active` yang muncul di pencarian ketersediaan (BR-013). `maintenance`
+        tetap punya lajur di kalender; `retired` tidak punya lajur sama sekali.
+
+        Tidak ada `rented` di sini, dan itu disengaja: "sedang disewa" adalah turunan
+        dari booking ber-status `picked_up`, bukan keadaan yang disimpan (BR-023).
+        Dua sumber untuk satu fakta berarti satu di antaranya akan salah.
+      enum: [active, maintenance, retired]
+
+    Resource:
+      type: object
+      description: |
+        Jenis barang. Unit fisiknya ada di `ResourceUnit`, dan booking selalu menunjuk
+        unit — tidak pernah hanya jenisnya (BR-010).
+
+        **Keempat nominal dan `category` wajib ada di respons walau bernilai `null`.**
+        Di sebuah *request* "tidak dikirim" dan "`null`" adalah dua perintah berbeda;
+        di respons tidak ada bedanya — barangnya berdeposit atau tidak. Menghilangkan
+        key-nya memaksa klien menebak mana dari dua arti itu yang dimaksud, jadi
+        field-nya selalu terbit dan `null` mengatakannya sendiri.
+      required:
+        - id
+        - name
+        - category
+        - pricing_unit
+        - base_price
+        - deposit_amount
+        - late_fee_per_unit
+        - min_duration
+        - max_duration
+        - buffer_minutes
+        - requires_id_verification
+        - status
+        - unit_count
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          examples: ["Avanza 2021"]
+        category:
+          type: [string, "null"]
+          examples: ["Mobil"]
+        pricing_unit:
+          $ref: "#/components/schemas/PricingUnit"
+        base_price:
+          type: integer
+          format: int64
+          description: |
+            Rupiah penuh, bukan minor unit: `350000` berarti Rp 350.000.
+          examples: [350000]
+        deposit_amount:
+          type: [integer, "null"]
+          format: int64
+          description: |
+            `null` berarti barang ini tidak berdeposit — BR-045 tidak menerbitkan
+            barisnya, dan BR-048/BR-049 tidak berlaku. **`0` ditolak database**: tidak
+            ada kasus rental yang butuh deposit nol rupiah, dan kalau `0` dan `null`
+            sama-sama berarti "tanpa deposit", tidak ada laporan yang bisa
+            membedakannya lagi (BR-016).
+          examples: [500000]
+        late_fee_per_unit:
+          type: [integer, "null"]
+          format: int64
+          description: |
+            `null` berarti tanpa denda telat. Yang hilang cuma tagihannya —
+            peringatan terlambat dan pengingatnya tetap jalan (BR-016, BR-041).
+        min_duration:
+          type: [integer, "null"]
+          description: "`null` berarti tanpa batas bawah, bukan nol (BR-016, BR-021)."
+        max_duration:
+          type: [integer, "null"]
+          description: "`null` berarti tanpa batas atas. `max < min` ditolak database."
+        buffer_minutes:
+          type: integer
+          default: 0
+          description: |
+            Jeda wajib sesudah `end_at` sebelum unit yang sama bisa disewa lagi
+            (BR-015). **Satu-satunya field opsional di sini yang tidak boleh kosong:**
+            `end_at + NULL` menghasilkan NULL, dan rentang tak berbatas ke atas akan
+            bentrok dengan seluruh booking masa depan unit itu. "Tanpa jeda" sudah
+            persis sama dengan `0`.
+          examples: [120]
+        requires_id_verification:
+          type: boolean
+          default: false
+          description: |
+            Tidak ikut yang boleh `null`, walau BR-016 mendaftarnya di tabel yang sama:
+            boolean bernilai `NULL` cuma menambah keadaan ketiga yang tidak berarti apa
+            pun. "Tidak wajib" sudah persis sama dengan `false` (BR-085).
+        status:
+          $ref: "#/components/schemas/ResourceStatus"
+        unit_count:
+          type: integer
+          description: |
+            Unit `active` yang dimiliki jenis barang ini. Dihitung server. Nol berarti
+            barang ini tidak akan pernah muncul di pencarian ketersediaan, berapa pun
+            statusnya sendiri (BR-010) — dan layar katalog wajib mengatakannya.
+
+    ResourceCreate:
+      type: object
+      description: |
+        `pricing_unit` **sengaja tidak ada di sini** dan tidak akan pernah ada:
+        server mengisinya dari preset pemiliknya (BR-017). Begitu juga `id`, `owner_id`,
+        dan `unit_count`.
+      required: [name, base_price]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        category:
+          type: string
+        base_price:
+          type: integer
+          format: int64
+          minimum: 0
+        deposit_amount:
+          type: [integer, "null"]
+          format: int64
+        late_fee_per_unit:
+          type: [integer, "null"]
+          format: int64
+        min_duration:
+          type: [integer, "null"]
+        max_duration:
+          type: [integer, "null"]
+        buffer_minutes:
+          type: integer
+          minimum: 0
+          default: 0
+        requires_id_verification:
+          type: boolean
+          default: false
+
+    ResourceUpdate:
+      type: object
+      description: |
+        Semua field opsional, dan key yang absen membiarkan nilainya apa adanya.
+
+        **Untuk keempat nominal, `null` eksplisit mencabut nilainya** — itu satu-satunya
+        caranya, dan itu pengecualian yang disengaja terhadap aturan umum "`null`
+        eksplisit adalah `422`" yang berlaku untuk field yang dikelola server
+        (`04-api-spec.md` §3.2). `buffer_minutes` tidak ikut: ia `NOT NULL`.
+      properties:
+        name:
+          type: string
+          minLength: 1
+        category:
+          type: [string, "null"]
+        base_price:
+          type: integer
+          format: int64
+          minimum: 0
+        deposit_amount:
+          type: [integer, "null"]
+          format: int64
+        late_fee_per_unit:
+          type: [integer, "null"]
+          format: int64
+        min_duration:
+          type: [integer, "null"]
+        max_duration:
+          type: [integer, "null"]
+        buffer_minutes:
+          type: integer
+          minimum: 0
+        requires_id_verification:
+          type: boolean
+        status:
+          $ref: "#/components/schemas/ResourceStatus"
+
+    ResourceUpdated:
+      allOf:
+        - $ref: "#/components/schemas/Resource"
+        - type: object
+          required: [active_bookings]
+          properties:
+            active_bookings:
+              type: integer
+              description: |
+                Booking berjalan yang **tetap memakai harga lama**, karena harga
+                di-snapshot saat booking dibuat dan tidak pernah dibaca ulang (BR-014).
+                Ia ada supaya pemilik yang menaikkan harga tahu persis berapa banyak
+                yang tidak ikut naik, tanpa menebak.
+
+                **Selalu `0` sampai `S1-022` membuat tabel `bookings`.** Bentuk
+                responsnya mendarat sekarang supaya layarnya ditulis sekali; yang
+                menyusul cuma isi query-nya.
+
+    ResourceUnit:
+      type: object
+      description: |
+        Barang fisiknya. Tiga Avanza adalah satu `Resource` dan tiga baris di sini,
+        dan kalender menampilkan tiga lajur terpisah.
+      required: [id, resource_id, code, label, status, meter_value, condition_notes]
+      properties:
+        id:
+          type: string
+          format: uuid
+        resource_id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          description: |
+            Plat nomor atau nomor seri — yang dipakai operator mengenali barangnya
+            secara fisik. Unik per usaha, bukan global: dua rental boleh sama-sama
+            punya `B 1234 XY` (BR-011).
+
+            **Tidak pernah muncul di permukaan publik** (BR-025).
+          examples: ["B 1234 XY"]
+        label:
+          type: [string, "null"]
+          description: Nama panggilan, buat dibacakan lewat telepon.
+          examples: ["Avanza Putih"]
+        status:
+          $ref: "#/components/schemas/UnitStatus"
+        meter_value:
+          type: [integer, "null"]
+          format: int64
+          description: |
+            Odometer atau jam pakai terakhir. Biasanya diisi serah-terima (`S1-035`);
+            di sini supaya unit baru bisa mulai dari angka yang benar.
+        condition_notes:
+          type: [string, "null"]
+
+    UnitCreate:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          minLength: 1
+        label:
+          type: string
+        meter_value:
+          type: [integer, "null"]
+          format: int64
+        condition_notes:
+          type: string
+
+    UnitUpdate:
+      type: object
+      description: |
+        Semua field opsional. `resource_id` tidak ada di sini — memindahkan unit ke
+        jenis barang lain akan membuat snapshot booking lama menunjuk jenis yang tidak
+        pernah disewa (BR-014), dan itu perubahan kontrak, bukan satu field.
+      properties:
+        code:
+          type: string
+          minLength: 1
+        label:
+          type: [string, "null"]
+        status:
+          $ref: "#/components/schemas/UnitStatus"
+        meter_value:
+          type: [integer, "null"]
+          format: int64
+        condition_notes:
+          type: [string, "null"]
+
+    UnitUpdated:
+      allOf:
+        - $ref: "#/components/schemas/ResourceUnit"
+        - type: object
+          required: [warning]
+          properties:
+            warning:
+              $ref: "#/components/schemas/UnitWarning"
+
+    UnitWarning:
+      type: object
+      description: |
+        Apa yang terdampak oleh perubahan ini. Ia **peringatan, bukan penolakan**:
+        barisnya sudah berubah waktu badan ini dibaca (BR-013).
+      required: [affected_bookings]
+      properties:
+        affected_bookings:
+          type: array
+          description: |
+            Booking yang sudah ada untuk unit ini dan **tidak** dibatalkan maupun
+            dihapus. Pemilik yang memutuskan apa yang terjadi pada masing-masing.
+
+            **Selalu kosong sampai `S1-022` membuat tabel `bookings`.**
+          items:
+            $ref: "#/components/schemas/AffectedBooking"
+
+    AffectedBooking:
+      type: object
+      required: [code, start_at, end_at, status]
+      properties:
+        code:
+          type: string
+          examples: ["SWN-0043"]
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+        status:
+          type: string
 
     ErrorCode:
       type: string

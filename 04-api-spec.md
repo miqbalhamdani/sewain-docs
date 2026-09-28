@@ -432,7 +432,7 @@ seketika (BR-004).
 | Method | Path | Peran | BR |
 |---|---|---|---|
 | `GET` `POST` | `/resources` | POST 🔒 | BR-010, BR-012, BR-015 |
-| `GET` `PATCH` `DELETE` | `/resources/{id}` | 🔒 untuk harga & deposit | BR-003, BR-014 |
+| `GET` `PATCH` `DELETE` | `/resources/{id}` | GET semua; PATCH/DELETE 🔒 | BR-003, BR-014 |
 | `GET` `POST` | `/resources/{id}/units` | POST 🔒 | BR-010, BR-011 |
 | `PATCH` `DELETE` | `/units/{id}` | 🔒 | BR-013 |
 
@@ -440,15 +440,32 @@ Mengubah harga resource **tidak** menyentuh booking mana pun (BR-014); respons
 `PATCH /resources/{id}` menyebutkan jumlah booking berjalan yang tetap memakai
 harga lama, supaya pemilik tidak menebak.
 
+**Operator membaca katalog, tidak menulisnya.** Matriks BR-003 di
+`sewain-api/internal/auth/roles.go` — satu-satunya definisinya — memberi operator
+`resources:read` dan `units:read`, tidak lebih. Jadi `POST`, `PATCH`, dan `DELETE`
+di tabel ini seluruhnya 🔒, dan baris `/resources/{id}` yang dulu berbunyi "🔒 untuk
+harga & deposit" menyiratkan sesuatu yang tidak pernah benar di kode.
+
+Yang tetap dicek terpisah: field `base_price`, `deposit_amount`, dan
+`late_fee_per_unit` butuh **`pricing:write`** di atas `resources:write`. Hari ini
+kedua izin itu sama-sama milik owner saja, jadi cek kedua belum pernah jadi
+satu-satunya yang menolak. Ia ada karena BR-003 menyebut **nominalnya**, bukan
+endpoint-nya — kalau matriks perannya berubah, cek inilah yang masih benar. Di
+layar, ketiga field itu **tidak dirender** untuk operator (`S1-018`).
+
 **`pricing_unit` tidak dikirim klien.** Server mengisinya dari `owners.business_type`
 saat resource dibuat (BR-012, BR-017) — seperti `unit_price` dan `deposit_amount` pada
 booking. Mengirimnya → `422`. Juragan rental tidak pernah ditanya satuan harga, karena
 presetnya cuma punya satu; pemilih baru dirender untuk preset bersatuan-banyak
 (`apartment`, fase 2).
 
-**Lima field boleh `null`, dan `null` berarti aturannya tidak berlaku** (BR-016):
-`deposit_amount`, `late_fee_per_unit`, `min_duration`, `max_duration`, dan
-`requires_id_verification` (default `false`).
+**Empat field boleh `null`, dan `null` berarti aturannya tidak berlaku** (BR-016):
+`deposit_amount`, `late_fee_per_unit`, `min_duration`, dan `max_duration`.
+
+`requires_id_verification` **tidak** ikut, walau BR-016 mendaftarnya di tabel yang
+sama: ia `NOT NULL DEFAULT false` di `03-erd.md` §3, dan "tidak wajib" sudah persis
+sama dengan `false`. Alasannya sejenis dengan `buffer_minutes` — sebuah boolean
+bernilai `NULL` menambah keadaan ketiga yang tidak ada artinya bagi siapa pun.
 
 ```json
 { "name": "Tenda Dome 4 Orang", "base_price": 75000,
