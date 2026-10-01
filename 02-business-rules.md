@@ -285,6 +285,85 @@ Empat aturan yang menempel:
    sebagai tabel di aturan ini dan konstanta di kode; tidak disalin ke tiap baris
    `owners`. Enam preset harus punya satu sumber kebenaran, bukan satu per pemilik.
 
+### BR-094 Atribut kendaraan **[baru]**
+Preset `vehicle_rental` punya atribut yang tidak dimiliki vertikal lain: jenis,
+transmisi, jumlah kursi, bahan bakar, tahun, warna, pajak, STNK. Ia disimpan di
+**tabel pendamping 1:1** — `vehicle_specs` untuk jenis barangnya,
+`vehicle_unit_details` untuk unit fisiknya — bukan sebagai kolom di `resources`
+dan bukan sebagai `jsonb`.
+
+Tiga alasan, dan ketiganya menolak satu alternatif masing-masing:
+
+1. **`resources` tetap generik.** Kamera, kos, dan lapangan tidak mewarisi kolom
+   `transmission` yang selamanya kosong. Ini persis mode gagal yang dipakai
+   BR-017 aturan 2 untuk menolak pemilih satuan harga: field yang ada demi
+   vertikal yang belum dibuka.
+2. **Aturannya ditegakkan database.** "Kursi hanya untuk mobil", "kopling hanya
+   untuk motor", dan "diesel hanya untuk mobil" semuanya `CHECK` lintas kolom.
+   Dengan `jsonb` ketiganya cuma hidup di aplikasi — semangat yang sama dengan
+   BR-012, yang menolak mendaftar satuan harga tanpa menegakkannya.
+3. **Migrasi per vertikal memang wajar.** Vertikal baru tetap butuh form,
+   placeholder, dan halaman publiknya sendiri. Satu tabel pendamping adalah
+   bagian terkecil dari pekerjaan itu.
+
+Dua aturan yang menempel:
+
+- **`vehicle_type` dikunci sesudah resource dibuat.** Alasannya mekanis, bukan
+  selera: `CHECK ((vehicle_type = 'car') = (seats IS NOT NULL))` membuat
+  motor→mobil melanggar constraint kecuali kursinya ikut diisi di transaksi yang
+  sama. Juragan yang salah pilih jenis membuat resource baru, dan itu lebih murah
+  daripada jalur migrasi nilai yang dipakai sekali seumur hidup.
+- **`resources.category` diturunkan dari `vehicle_type`, diisi server.** Klien
+  tidak pernah mengirimnya, sama seperti `pricing_unit` (BR-017 aturan 1).
+  Tujuannya supaya daftar resource generik tetap bisa dikelompokkan tanpa join;
+  sumber kebenarannya tetap `vehicle_type`. Preset yang belum punya tabel
+  pendamping membiarkan `category` kosong — bukan mengisinya dengan tebakan.
+
+Preset tetap **satu**, `vehicle_rental`, dan jenis dipilih per resource. Rental
+yang menyewakan mobil dan motor sekaligus harus muat di satu akun; memecah preset
+jadi dua akan memaksanya punya dua.
+
+### BR-095 Syarat & ketentuan resource **[baru]**
+Tiga teks opsional per resource — **belum termasuk**, **syarat sewa**, dan
+**pembatalan & perubahan** — plus `description` untuk fitur dan perlengkapan.
+Bagian yang kosong tidak ditampilkan di halaman publik.
+
+Satu aturan menjaga halaman itu tetap jujur, dan ia lebih penting daripada
+ketiga kolomnya: **apa pun yang dihitung sistem tidak boleh diketik ulang
+juragan.**
+
+| Kalimat di halaman publik | Sumbernya |
+|---|---|
+| "1 hari = 24 jam" | `resources.pricing_unit` (BR-012) |
+| "Bayar paling lambat X jam, atau booking batal otomatis" | `owners.payment_due_hours` (BR-057) |
+| "Telat kembali dikenakan Rp X per hari" | `resources.late_fee_per_unit` (BR-016) |
+| "Tidak datang lewat X jam dari jadwal = batal" | `owners.no_show_tolerance_hours` (BR-057) |
+
+Keempatnya dirakit sistem dan **tidak bisa diedit**. Juragan yang mengetik ulang
+"bayar maksimal 24 jam" ke dalam textarea akan salah pada detik ia mengubah
+knob-nya, dan halaman publiknya berbohong tanpa ada yang tahu — persis kelas bug
+yang dihapus BR-024 dari prefix kode booking dan BR-014 dari harga booking.
+
+Teks dari juragan karena itu hanya untuk hal yang **tidak dijalankan sistem**:
+refund, reschedule, ongkos antar, kebijakan BBM. Semuanya dieksekusi manual oleh
+juragan sendiri, dan fase 1 memang tidak menjanjikan lebih.
+
+**Keempatnya menerima markdown minimal** — tebal, miring, dan daftar berbutir.
+Tidak lebih: tanpa tautan, tanpa gambar, tanpa tabel, tanpa heading. Kolomnya
+tetap `text` polos dan batas `char_length` **ikut menghitung penandanya**, jadi
+`**AC dingin**` memakan 15 dari jatah 500, bukan 9.
+
+Yang dipilih di sini adalah markdown, **bukan HTML**, dan alasannya sama dengan
+alasan batas panjangnya ada: halaman publik merender teks ini dan teks yang
+dirender apa adanya adalah permukaan serangan kalau ia markup. Markdown gagal
+dengan jinak — pembaca yang renderernya belum terpasang melihat `**AC dingin**`,
+bukan skrip orang lain yang berjalan di peramban penyewa.
+
+`S1-060` merendernya lewat **satu** renderer, dan renderer itu satu-satunya
+tempat markdown berubah jadi elemen. Bagian yang tidak dikenalinya ditampilkan
+sebagai teks biasa, tidak dibuang: syarat sewa yang hilang separuh lebih buruk
+daripada syarat sewa yang tampil jelek.
+
 ---
 
 ## 3. Ketersediaan & booking
@@ -605,6 +684,35 @@ Empat aturan yang menempel:
    hijau. Ia muncul di dashboard sebagai daftar tersendiri, sebaris dengan peringatan
    terlambat. Tanpa itu, BR-049 cuma ketahuan kalau ada yang membuka booking-nya satu
    per satu.
+
+### BR-096 Profil usaha yang dilihat penyewa **[baru]**
+`owners` menyimpan tiga hal yang bukan knob melainkan identitas: **`whatsapp`**,
+**`address`**, dan **`operating_hours`**. Ketiganya diatur dari `PATCH /settings`
+seperti knob lain, dan ketiganya dibaca halaman publik (BR-025).
+
+**Aturan ini menambal lubang, bukan membuka fitur.** `04-api-spec.md` §4 sudah
+menjanjikan `{ "owner": { "name": …, "whatsapp": "+62…" } }` di respons katalog
+publik sejak sebelum ada kolomnya, dan acceptance `S1-068` menuntut "penyewa yang
+mendarat di katalog kosong harus tahu harus menghubungi siapa". Dua janji, nol
+kolom di baliknya.
+
+- **`whatsapp` satu-satunya yang dibaca mesin**, bukan mata: halaman publik
+  menjadikannya tautan `wa.me`, jadi formatnya ditegakkan database (`+62`,
+  8–13 digit). Nomor berformat bebas menghasilkan tautan mati, dan tautan mati di
+  halaman yang seluruh gunanya menghubungi pemilik lebih buruk daripada tidak ada
+  tombol sama sekali.
+- **`address` adalah lokasi ambil default**, kecuali juragan menulis lain di
+  syarat sewa (BR-095).
+- **`operating_hours` teks bebas** dan sengaja tidak terstruktur. Jam buka rental
+  Indonesia penuh pengecualian — "24 jam lewat WA", "Minggu janjian dulu" — dan
+  memaksanya jadi tujuh baris buka/tutup membuat juragan mengisi data yang salah
+  atau tidak mengisi sama sekali.
+
+**Ketiganya nullable, dan kosong bukan kasus pinggir.** Ia keadaan awal setiap
+usaha yang baru mendaftar, persis seperti `slug` (BR-025, BR-005) — pendaftaran
+cuma menanyakan empat hal. Yang berlaku: **halaman publik tidak hidup sebelum
+`slug`, `whatsapp`, dan `address` ketiganya terisi**, dan layar pengaturan wajib
+mengatakan itu, bukan membiarkan juragan menebak kenapa halamannya kosong.
 
 ---
 
@@ -1230,6 +1338,9 @@ satu AC atau satu test.
 | BR-012 | A1 | Test satuan: `INSERT` tanpa `pricing_unit` menghasilkan `day` **bukan `NULL`**; nilai asing (`'bulan'`) **ditolak database** |
 | BR-017 | A0, A1 | Test preset: `business_type` asing ditolak database; `pricing_unit` resource baru terisi dari preset pemiliknya, **bukan dari request body**; ganti preset tidak menyentuh resource maupun booking lama; form fase 1 tidak merender pemilih satuan |
 | BR-013 | A1 | Test: unit `maintenance` hilang dari pencarian, booking tetap ada |
+| BR-094 | A1 | Test spek kendaraan: mobil tanpa kursi & motor **dengan** kursi sama-sama ditolak database; `clutch` di mobil dan `diesel` di motor ditolak; `vehicle_type` tidak ada di skema `PATCH`; `category` terisi dari `vehicle_type` **bukan dari request body**; spek yang menunjuk resource pemilik lain ditolak FK komposit |
+| BR-095 | A1 | Test S&K: tiga teks opsional tersimpan dan boleh kosong; **nol textarea untuk hal yang dihitung sistem** — tenggat bayar, denda telat, dan toleransi no-show dirender dari kolomnya, tidak bisa diketik |
+| BR-096 | A0, B6 | Test profil: `whatsapp` berformat salah ditolak database; ketiganya boleh kosong pada usaha baru; halaman publik tidak hidup sebelum `slug` + `whatsapp` + `address` terisi |
 | BR-015 | A2 | Test buffer: booking selesai 10:00 + buffer 120 → tersedia 12:00 |
 | BR-016 | A1, C2 | Test field opsional: `NULL` diterima & `0` **ditolak database** untuk keempat nominal; resource tanpa deposit tidak menerbitkan baris `deposit` dan tidak memblokir `completed`; resource tanpa `late_fee_per_unit` **tetap** memunculkan peringatan terlambat |
 | BR-020, BR-021 | B1 | Test pencarian ketersediaan; test durasi: di luar `min`/`max` ditolak, dan **kosong berarti tanpa batas** |

@@ -20,6 +20,8 @@ erDiagram
     users  ||--o{ refresh_tokens : "sesi"
 
     resources ||--o{ resource_units : "unit fisik"
+    resources ||--o| vehicle_specs : "spek kendaraan (BR-094)"
+    resource_units ||--o| vehicle_unit_details : "detail kendaraan (BR-094)"
     resources ||--o{ bookings : "jenis"
     resource_units ||--o{ bookings : "dibooking"
     customers ||--o{ bookings : "penyewa"
@@ -51,6 +53,9 @@ erDiagram
         text_array allowed_origins "BR-031, default kosong = tidak ada origin lintas-domain"
         text booking_code_prefix "BR-024, 2-6 huruf besar/angka, default SWN"
         text business_type "BR-017, preset pasar; menentukan pricing_unit resource"
+        text whatsapp "BR-096, NULL = halaman publik belum bisa hidup; format +62 ditegakkan"
+        text address "BR-096, lokasi ambil default"
+        text operating_hours "BR-096, teks bebas; jam buka rental penuh pengecualian"
     }
 
     api_keys {
@@ -101,8 +106,12 @@ erDiagram
         uuid id PK
         uuid owner_id FK
         text name
-        text category
+        text category "diisi SERVER dari vehicle_specs.vehicle_type (BR-094)"
         text_array images
+        text description "fitur & perlengkapan; dirender halaman publik (BR-095)"
+        text terms_excludes "belum termasuk; NULL = tidak ditampilkan (BR-095)"
+        text terms_requirements "syarat sewa (BR-095)"
+        text terms_cancellation "pembatalan & perubahan (BR-095)"
         text pricing_unit "hour|day|week|month; diisi SERVER dari preset pemilik (BR-012, BR-017)"
         bigint base_price
         bigint deposit_amount "NULL = tanpa deposit (BR-016)"
@@ -123,6 +132,24 @@ erDiagram
         text status "active | maintenance | retired (BR-013)"
         bigint meter_value
         text condition_notes
+    }
+
+    vehicle_specs {
+        uuid resource_id PK "1:1, sekaligus FK komposit ke resources (BR-094)"
+        uuid owner_id FK
+        text vehicle_type "car | motorcycle; DIKUNCI sesudah dibuat (BR-094)"
+        text transmission "manual | automatic | clutch; clutch hanya motor"
+        int seats "2-20; WAJIB mobil, DILARANG motor"
+        text fuel "gasoline | diesel | hybrid | electric; diesel hanya mobil"
+    }
+
+    vehicle_unit_details {
+        uuid resource_unit_id PK "1:1, sekaligus FK komposit ke resource_units (BR-094)"
+        uuid owner_id FK
+        int year "1990-2100 di database; 'tahun depan' divalidasi aplikasi"
+        text color
+        date tax_due_on "hanya dilihat juragan, tidak pernah publik"
+        date registration_valid_until "idem"
     }
 
     customers {
@@ -317,8 +344,8 @@ createdb sewain_scratch && psql sewain_scratch -f docs/03-verify-overlap-constra
 ```
 
 **Constraint sisanya punya skripnya sendiri:** `docs/03-verify-constraints.sql` — pola
-sama: **43 `NOTICE OK` constraint plus 6 `NOTICE OK RLS`** yang membuktikan isolasi BR-001.
-Kasusnya 43 untuk 33 constraint karena beberapa diuji dari dua arah — menolak yang salah **dan**
+sama: **57 `NOTICE OK` constraint plus 6 `NOTICE OK RLS`** yang membuktikan isolasi BR-001.
+Kasusnya 57 untuk 53 constraint karena beberapa diuji dari dua arah — menolak yang salah **dan**
 menerima yang benar, supaya constraint yang kebablasan ikut ketahuan.
 Yang RLS diuji dari **peran non-superuser**: superuser melewati RLS sepenuhnya, `FORCE`
 sekalipun, jadi mengujinya sebagai diri sendiri akan lulus secara palsu. Tabel di dalamnya sengaja minimal (hanya kolom yang
@@ -561,6 +588,102 @@ ALTER TABLE resources ADD CONSTRAINT resources_id_owner_uq UNIQUE (id, owner_id)
 ALTER TABLE resource_units ADD CONSTRAINT resource_units_resource_matches_owner
   FOREIGN KEY (resource_id, owner_id) REFERENCES resources (id, owner_id);
 
+-- BR-094: atribut kendaraan hidup di tabel pendamping 1:1, bukan sebagai kolom
+-- di resources (kamera dan kos tidak mewarisi transmission yang selamanya kosong)
+-- dan bukan sebagai jsonb (ketiga CHECK lintas kolom di bawah tidak bisa ditulis).
+--
+-- resource_units butuh UNIQUE (id, owner_id)-nya sendiri, dengan alasan yang sama
+-- persis seperti resources di atas: cek FK melewati RLS, jadi pasangannya yang
+-- menjaga, bukan disiplin aplikasi.
+ALTER TABLE resource_units ADD CONSTRAINT resource_units_id_owner_uq
+  UNIQUE (id, owner_id);
+
+CREATE TABLE vehicle_specs (
+  resource_id  uuid PRIMARY KEY,
+  owner_id     uuid NOT NULL,
+  vehicle_type text NOT NULL,
+  transmission text NOT NULL,
+  seats        int,
+  fuel         text NOT NULL,
+  CONSTRAINT vehicle_specs_resource_matches_owner
+    FOREIGN KEY (resource_id, owner_id) REFERENCES resources (id, owner_id)
+    ON DELETE CASCADE
+);
+
+-- ON DELETE CASCADE, dan ini satu-satunya tempat di skema ini yang memakainya.
+-- resources di-soft-delete (deleted_at), jadi cascade tidak pernah menyala lewat
+-- jalur API; ia ada untuk jalur yang benar-benar menghapus baris -- pembersihan
+-- manual, test, dan pemulihan. Spek tanpa resource-nya bukan data, ia sampah yang
+-- masih memegang kunci komposit.
+
+ALTER TABLE vehicle_specs
+  ADD CONSTRAINT vehicle_specs_type_valid
+    CHECK (vehicle_type IN ('car', 'motorcycle')),
+  ADD CONSTRAINT vehicle_specs_transmission_valid
+    CHECK (transmission IN ('manual', 'automatic', 'clutch')),
+  ADD CONSTRAINT vehicle_specs_fuel_valid
+    CHECK (fuel IN ('gasoline', 'diesel', 'hybrid', 'electric')),
+  ADD CONSTRAINT vehicle_specs_seats_range
+    CHECK (seats IS NULL OR seats BETWEEN 2 AND 20);
+
+-- Tiga CHECK lintas kolom, dan ketiganya alasan tabel ini bukan jsonb.
+-- Yang pertama ditulis sebagai kesetaraan, bukan dua OR: ia menegakkan DUA arah
+-- sekaligus -- mobil WAJIB punya kursi, motor DILARANG punya. Versi "mobil wajib"
+-- saja akan menerima motor berkursi empat tanpa satu pun test merah.
+ALTER TABLE vehicle_specs
+  ADD CONSTRAINT vehicle_specs_seats_car
+    CHECK ((vehicle_type = 'car') = (seats IS NOT NULL)),
+  ADD CONSTRAINT vehicle_specs_clutch_moto
+    CHECK (transmission <> 'clutch' OR vehicle_type = 'motorcycle'),
+  ADD CONSTRAINT vehicle_specs_diesel_car
+    CHECK (fuel <> 'diesel' OR vehicle_type = 'car');
+
+CREATE TABLE vehicle_unit_details (
+  resource_unit_id        uuid PRIMARY KEY,
+  owner_id                uuid NOT NULL,
+  year                    int NOT NULL,
+  color                   text,
+  tax_due_on              date,
+  registration_valid_until date,
+  CONSTRAINT vehicle_unit_details_unit_matches_owner
+    FOREIGN KEY (resource_unit_id, owner_id) REFERENCES resource_units (id, owner_id)
+    ON DELETE CASCADE
+);
+
+-- Batas atasnya sengaja longgar sampai 2100. "Tahun depan" adalah batas yang
+-- benar, dan ia tidak bisa jadi CHECK: predikatnya butuh now(), dan CHECK wajib
+-- IMMUTABLE. Aplikasi yang menyempitkannya; database yang menolak yang absurd.
+ALTER TABLE vehicle_unit_details
+  ADD CONSTRAINT vehicle_unit_details_year_range
+    CHECK (year BETWEEN 1990 AND 2100);
+
+SELECT enable_owner_rls('vehicle_specs');
+SELECT enable_owner_rls('vehicle_unit_details');
+
+-- BR-095: S&K dan deskripsi tinggal di resources, bukan di tabel pendamping.
+-- Kos, lapangan, dan kamera juga punya syarat sewa dan kebijakan pembatalan --
+-- yang membedakan cuma placeholder-nya, dan placeholder adalah konstanta di kode
+-- (BR-017 aturan 4), bukan skema.
+--
+-- Batas panjangnya ditegakkan di sini karena halaman publik merendernya apa
+-- adanya: teks 50 ribu karakter bukan syarat sewa, ia halaman yang rusak.
+ALTER TABLE resources
+  ADD CONSTRAINT resources_description_length
+    CHECK (description IS NULL OR char_length(description) <= 500),
+  ADD CONSTRAINT resources_terms_excludes_length
+    CHECK (terms_excludes IS NULL OR char_length(terms_excludes) <= 500),
+  ADD CONSTRAINT resources_terms_requirements_length
+    CHECK (terms_requirements IS NULL OR char_length(terms_requirements) <= 1000),
+  ADD CONSTRAINT resources_terms_cancellation_length
+    CHECK (terms_cancellation IS NULL OR char_length(terms_cancellation) <= 1000);
+
+-- BR-096: nomor yang dibaca mesin, bukan mata. Halaman publik menjadikannya
+-- tautan wa.me, dan nomor berformat bebas menghasilkan tautan mati di halaman
+-- yang seluruh gunanya menghubungi pemilik.
+ALTER TABLE owners
+  ADD CONSTRAINT owners_whatsapp_format
+    CHECK (whatsapp IS NULL OR whatsapp ~ '^\+62[0-9]{8,13}$');
+
 -- BR-021: rentang harus masuk akal.
 ALTER TABLE bookings
   ADD CONSTRAINT bookings_range_valid CHECK (end_at > start_at),
@@ -751,7 +874,10 @@ sudah lewat tidak bisa menjawab "kenapa pengingat Selasa lalu tidak terkirim".
 | `notifications`, `audit_logs` baru | BR-072 (kegagalan harus terlihat) dan BR-085 (akses identitas tercatat) tidak punya tempat menyimpan di §6. |
 | `bookings.buffer_minutes` ikut di-snapshot | BR-015 + BR-014: mengubah buffer di resource tidak boleh menggeser `end_at_with_buffer` booking lama. |
 | `bookings.expires_at` | BR-027: ambang per pemilik, jadi tidak bisa dihitung sebagai `created_at + 24 jam` yang di-hardcode. |
-| `resources.description` **dihapus** | PRD §6.2 memuatnya, §1 di atas tidak, dan `S1-014` harus memilih salah satu. Yang menang §1: nama, kategori, dan foto sudah menjawab "barang apa ini", dan kolom teks bebas yang tidak dirender di mana pun cuma menunggu diisi lalu dilupakan. Tambahkan kembali ketika ada layar yang menampilkannya. |
+| `resources.description` dihapus di `S1-014`, **dikembalikan di `S1-085`** | Syaratnya waktu dicabut adalah *"tambahkan kembali ketika ada layar yang menampilkannya"*, dan syarat itu sekarang terpenuhi dua kali: form resource mengisinya, halaman publik `S1-060` merendernya (BR-095). Yang tidak berubah adalah aturannya — kalau `S1-060` batal, kolom ini ikut dicabut lagi. |
+| `resources.terms_excludes`, `terms_requirements`, `terms_cancellation` baru | BR-095. Tinggal di `resources` dan bukan di tabel pendamping kendaraan: kos, lapangan, dan kamera juga punya syarat sewa; yang membedakan cuma placeholder-nya, dan placeholder adalah konstanta di kode (BR-017 aturan 4). |
+| `vehicle_specs`, `vehicle_unit_details` baru | BR-094. Tabel pendamping 1:1 supaya `resources` tetap generik — vertikal berikutnya menambah pendampingnya sendiri tanpa menyentuh tabel inti, dan tiga CHECK lintas kolom yang mustahil ditulis di `jsonb` tetap jadi urusan database. |
+| `owners.whatsapp`, `address`, `operating_hours` baru | BR-096, dan ini **menambal janji yang sudah ada**: `04-api-spec.md` §4 mengirim `owner.whatsapp` di respons katalog publik sejak sebelum kolomnya ada. |
 | `resources.status`, `resource_units.status` dapat CHECK | Keduanya cuma prosa di §1 sampai `S1-014`. Status yang tidak sah tidak menghasilkan error, ia menghasilkan baris yang hilang dari pencarian ketersediaan (BR-013) — jenis kegagalan yang persis sama dengan `pricing_unit` sebelum BR-012 menegakkannya. |
 | `resource_units_resource_matches_owner` (FK komposit) | Cek foreign key berjalan sebagai pemilik tabel dan melewati RLS, jadi FK biasa ke `resources(id)` menerima id pemilik mana pun (BR-001). |
 

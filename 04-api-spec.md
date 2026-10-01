@@ -245,9 +245,15 @@ kurang; baris milik usaha lain tidak boleh bisa dibedakan dari baris yang tidak 
 
 `PATCH /settings` adalah satu-satunya tempat knob pemilik hidup — `slug`,
 `booking_code_prefix`, `require_payment_before_pickup`, `draft_expiry_hours`,
-`payment_due_hours`, `no_show_tolerance_hours`, `allowed_origins`, dan tiga sakelar
-pengingat. Tidak ada satu pun yang di-hardcode
-(BR-024, BR-025, BR-027, BR-031, BR-038, BR-057, BR-070).
+`payment_due_hours`, `no_show_tolerance_hours`, `allowed_origins`, tiga sakelar
+pengingat, dan **profil usaha** `whatsapp`/`address`/`operating_hours`. Tidak ada satu
+pun yang di-hardcode (BR-024, BR-025, BR-027, BR-031, BR-038, BR-057, BR-070, BR-096).
+
+**Profil usaha bukan knob, ia identitas** — dan ketiganya nullable karena pendaftaran
+cuma menanyakan empat hal (BR-005). Yang berlaku: **halaman publik tidak hidup sebelum
+`slug`, `whatsapp`, dan `address` ketiganya terisi** (BR-096). `whatsapp` berformat
+`+62` diikuti 8–13 digit, ditegakkan database — halaman publik menjadikannya tautan
+`wa.me`, dan nomor berformat bebas menghasilkan tautan mati.
 
 `booking_code_prefix` 2–6 huruf besar/angka, default `SWN`; di luar itu `422`.
 Mengubahnya **tidak** menyentuh kode booking yang sudah terbit, dan **tidak** me-reset
@@ -466,6 +472,56 @@ presetnya cuma punya satu; pemilih baru dirender untuk preset bersatuan-banyak
 sama: ia `NOT NULL DEFAULT false` di `03-erd.md` §3, dan "tidak wajib" sudah persis
 sama dengan `false`. Alasannya sejenis dengan `buffer_minutes` — sebuah boolean
 bernilai `NULL` menambah keadaan ketiga yang tidak ada artinya bagi siapa pun.
+
+**`category` juga tidak dikirim klien.** Server menurunkannya dari
+`vehicle.vehicle_type` (BR-094), pola yang sama persis dengan `pricing_unit`.
+Mengirimnya → `422`. Preset yang belum punya tabel pendamping membiarkannya `null`.
+
+#### Atribut kendaraan (BR-094)
+
+Preset `vehicle_rental` membawa objek `vehicle` bersarang, yang memetakan satu-ke-satu
+ke tabel pendamping `vehicle_specs`. Bersarang, bukan diratakan: pembelahan
+generik-vs-kendaraan adalah inti keputusannya, dan kontrak yang meratakannya
+menyembunyikan justru hal yang paling perlu terlihat waktu vertikal kedua datang.
+
+```json
+{ "name": "Avanza 1.3 G", "base_price": 350000, "buffer_minutes": 120,
+  "vehicle": { "vehicle_type": "car", "transmission": "manual",
+               "seats": 7, "fuel": "gasoline" } }
+```
+
+**Cabangnya dua arah, dan keduanya `422`:**
+
+| Preset pemilik | `vehicle` di body | Hasil |
+|---|---|---|
+| `vehicle_rental` | ada | `201` |
+| `vehicle_rental` | tidak ada | `422` — kewajiban 1:1 dijaga aplikasi, karena database tidak bisa menegakkan "anak wajib ada" dengan murah |
+| preset lain | ada | `422` — `equipment_rental` tidak punya tabel pendamping, dan menerimanya diam-diam berarti membuang data yang dikira tersimpan |
+| preset lain | tidak ada | `201` |
+
+Tiga aturan lintas kolom **ditegakkan database**, bukan didaftar di sini: kursi wajib
+pada mobil dan dilarang pada motor, `clutch` hanya motor, `diesel` hanya mobil.
+
+**`vehicle.vehicle_type` tidak ada di `PATCH`.** Ia dikunci sesudah resource dibuat, dan
+alasannya mekanis: `CHECK ((vehicle_type = 'car') = (seats IS NOT NULL))` membuat
+motor→mobil melanggar constraint kecuali kursinya ikut diisi di transaksi yang sama.
+Juragan yang salah pilih jenis membuat resource baru (BR-094).
+
+Unit membawa `vehicle` versinya sendiri — `year` (wajib), `color`, `tax_due_on`,
+`registration_valid_until`. **Dua tanggal terakhir tidak pernah keluar ke permukaan
+publik**; ia catatan juragan untuk armadanya sendiri.
+
+#### Deskripsi & syarat-ketentuan (BR-095)
+
+`description` plus tiga teks opsional — `terms_excludes`, `terms_requirements`,
+`terms_cancellation`. Bagian yang kosong tidak ditampilkan di halaman publik.
+
+**Yang dihitung sistem tidak punya field di sini, dan itu disengaja.** "1 hari = 24
+jam", tenggat bayar, denda telat, dan toleransi no-show dirakit server dari
+`pricing_unit`, `owners.payment_due_hours`, `late_fee_per_unit`, dan
+`owners.no_show_tolerance_hours`. Juragan yang mengetik ulang "bayar maksimal 24 jam"
+akan salah pada detik ia mengubah knob-nya, dan halaman publiknya berbohong tanpa ada
+yang tahu.
 
 ```json
 { "name": "Tenda Dome 4 Orang", "base_price": 75000,
@@ -868,7 +924,7 @@ dari `Host`, jadi path-nya tidak punya segmen slug.
 
 | Method | Path | BR |
 |---|---|---|
-| `GET` | `/public/owner` | BR-025 |
+| `GET` | `/public/owner` | BR-025, BR-096 |
 | `GET` | `/public/resources` | BR-010, BR-013, BR-020, BR-025 |
 | `GET` | `/public/resources/{id}` | BR-025 |
 | `POST` | `/public/bookings` | BR-026, BR-027, BR-030 |
@@ -886,9 +942,25 @@ GET https://rentalbudi.sewain.id/api/v1/public/resources?start_at=…&end_at=…
               "min_duration": 1, "max_duration": 30 } ] }
 ```
 
+`GET /public/owner` membawa profil usahanya, dan ia yang membuat penyewa di katalog
+kosong tahu harus menghubungi siapa (BR-096, `S1-068`):
+
+```json
+{ "name": "Rental Budi", "whatsapp": "+628123456789",
+  "address": "Jl. Kaliurang KM 5 No. 12, Sleman",
+  "operating_hours": "Senin–Sabtu 08.00–20.00, Minggu janjian dulu" }
+```
+
+`operating_hours` sengaja teks bebas, bukan tujuh baris buka/tutup: jam rental Indonesia
+penuh pengecualian, dan memaksanya jadi struktur membuat juragan mengisi yang salah atau
+tidak mengisi sama sekali.
+
 Yang **tidak pernah** ada di respons publik: `resource_units.code`, id unit, nama
-penyewa lain, harga khusus, dan `owner_id` (BR-025). Ketersediaan dilaporkan di
-level resource; penunjukan unit fisik terjadi di server saat pengajuan dibuat.
+penyewa lain, harga khusus, dan `owner_id` (BR-025) — dan karena `code` adalah plat
+nomor (BR-011), **seluruh `vehicle_unit_details` ikut tidak pernah publik**: tahun dan
+warna per unit sudah cukup untuk membedakan mobil mana yang mana. Ketersediaan
+dilaporkan di level resource; penunjukan unit fisik terjadi di server saat pengajuan
+dibuat.
 
 `POST /public/bookings`:
 

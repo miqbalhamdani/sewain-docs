@@ -1,10 +1,10 @@
--- Verifikasi 37 constraint sisa di 03-erd.md §3.
+-- Verifikasi 53 constraint sisa di 03-erd.md §3.
 -- Anti-bentrok (BR-022) TIDAK di sini — ia punya file sendiri:
 --   03-verify-overlap-constraint.sql
 --
 -- Jalankan di database KOSONG / scratch:
 --   createdb sewain_scratch && psql sewain_scratch -f docs/03-verify-constraints.sql
--- Harapan: 47 NOTICE "OK" constraint + 6 NOTICE "OK RLS", tanpa ERROR yang
+-- Harapan: 57 NOTICE "OK" constraint + 6 NOTICE "OK RLS", tanpa ERROR yang
 -- tidak tertangkap.
 -- Script diakhiri ROLLBACK, jadi tidak meninggalkan apa pun.
 --
@@ -24,7 +24,8 @@ CREATE TABLE owners (
   booking_code_prefix text NOT NULL DEFAULT 'SWN',            -- BR-024
   business_type       text NOT NULL DEFAULT 'vehicle_rental',  -- BR-017
   payment_due_hours       int NOT NULL DEFAULT 24,               -- BR-057
-  no_show_tolerance_hours int NOT NULL DEFAULT 3    -- BR-057
+  no_show_tolerance_hours int NOT NULL DEFAULT 3,   -- BR-057
+  whatsapp                text                     -- BR-096
 );
 
 CREATE TABLE users (
@@ -61,7 +62,11 @@ CREATE TABLE resources (
   max_duration             int,
   buffer_minutes           int     NOT NULL DEFAULT 0,
   requires_id_verification boolean NOT NULL DEFAULT false,
-  status                   text    NOT NULL DEFAULT 'active'   -- BR-010
+  status                   text    NOT NULL DEFAULT 'active',  -- BR-010
+  description              text,                                -- BR-095
+  terms_excludes           text,
+  terms_requirements       text,
+  terms_cancellation       text
 );
 
 CREATE TABLE bookings (
@@ -178,6 +183,71 @@ ALTER TABLE resource_units ADD CONSTRAINT resource_units_status_valid
 ALTER TABLE resources ADD CONSTRAINT resources_id_owner_uq UNIQUE (id, owner_id);
 ALTER TABLE resource_units ADD CONSTRAINT resource_units_resource_matches_owner
   FOREIGN KEY (resource_id, owner_id) REFERENCES resources (id, owner_id);
+
+-- BR-094: tabel pendamping 1:1. Ketiga CHECK lintas kolom di bawah adalah alasan
+-- ia bukan jsonb -- tidak satu pun bisa ditulis di sana.
+ALTER TABLE resource_units ADD CONSTRAINT resource_units_id_owner_uq
+  UNIQUE (id, owner_id);
+
+CREATE TABLE vehicle_specs (
+  resource_id  uuid PRIMARY KEY,
+  owner_id     uuid NOT NULL,
+  vehicle_type text NOT NULL,
+  transmission text NOT NULL DEFAULT 'manual',
+  seats        int,
+  fuel         text NOT NULL DEFAULT 'gasoline',
+  CONSTRAINT vehicle_specs_resource_matches_owner
+    FOREIGN KEY (resource_id, owner_id) REFERENCES resources (id, owner_id)
+    ON DELETE CASCADE
+);
+
+ALTER TABLE vehicle_specs
+  ADD CONSTRAINT vehicle_specs_type_valid
+    CHECK (vehicle_type IN ('car', 'motorcycle')),
+  ADD CONSTRAINT vehicle_specs_transmission_valid
+    CHECK (transmission IN ('manual', 'automatic', 'clutch')),
+  ADD CONSTRAINT vehicle_specs_fuel_valid
+    CHECK (fuel IN ('gasoline', 'diesel', 'hybrid', 'electric')),
+  ADD CONSTRAINT vehicle_specs_seats_range
+    CHECK (seats IS NULL OR seats BETWEEN 2 AND 20),
+  ADD CONSTRAINT vehicle_specs_seats_car
+    CHECK ((vehicle_type = 'car') = (seats IS NOT NULL)),
+  ADD CONSTRAINT vehicle_specs_clutch_moto
+    CHECK (transmission <> 'clutch' OR vehicle_type = 'motorcycle'),
+  ADD CONSTRAINT vehicle_specs_diesel_car
+    CHECK (fuel <> 'diesel' OR vehicle_type = 'car');
+
+CREATE TABLE vehicle_unit_details (
+  resource_unit_id        uuid PRIMARY KEY,
+  owner_id                uuid NOT NULL,
+  year                    int NOT NULL DEFAULT 2020,
+  color                   text,
+  tax_due_on              date,
+  registration_valid_until date,
+  CONSTRAINT vehicle_unit_details_unit_matches_owner
+    FOREIGN KEY (resource_unit_id, owner_id) REFERENCES resource_units (id, owner_id)
+    ON DELETE CASCADE
+);
+
+ALTER TABLE vehicle_unit_details
+  ADD CONSTRAINT vehicle_unit_details_year_range
+    CHECK (year BETWEEN 1990 AND 2100);
+
+-- BR-095: halaman publik merendernya apa adanya.
+ALTER TABLE resources
+  ADD CONSTRAINT resources_description_length
+    CHECK (description IS NULL OR char_length(description) <= 500),
+  ADD CONSTRAINT resources_terms_excludes_length
+    CHECK (terms_excludes IS NULL OR char_length(terms_excludes) <= 500),
+  ADD CONSTRAINT resources_terms_requirements_length
+    CHECK (terms_requirements IS NULL OR char_length(terms_requirements) <= 1000),
+  ADD CONSTRAINT resources_terms_cancellation_length
+    CHECK (terms_cancellation IS NULL OR char_length(terms_cancellation) <= 1000);
+
+-- BR-096: nomor yang dibaca mesin, bukan mata.
+ALTER TABLE owners
+  ADD CONSTRAINT owners_whatsapp_format
+    CHECK (whatsapp IS NULL OR whatsapp ~ '^\+62[0-9]{8,13}$');
 
 -- BR-048 + BR-016. Versi lama (deposit_deducted <= deposit_amount) lolos DIAM-DIAM
 -- begitu deposit_amount nullable: CHECK yang bernilai NULL dianggap lolos.
@@ -299,6 +369,8 @@ DECLARE
   ph uuid := '66666666-6666-6666-6666-666666666666';
   us uuid := '77777777-7777-7777-7777-777777777777';
   r_id uuid;
+  r_id2 uuid;
+  u_id uuid;
   n  int  := 0;
 BEGIN
   INSERT INTO owners (id, slug) VALUES (o1, 'rentalbudi'), (o2, 'rentalsari');
@@ -312,7 +384,7 @@ BEGIN
     INSERT INTO owners (slug) VALUES ('rentalbudi');
     RAISE EXCEPTION 'GAGAL: slug duplikat diterima';
   EXCEPTION WHEN unique_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - owners_slug_unique tolak duplikat', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - owners_slug_unique tolak duplikat', n;
   END;
 
   -- 2 · owners_slug_format: hyphen di ujung DAN huruf besar ditolak.
@@ -327,7 +399,7 @@ BEGIN
     INSERT INTO owners (slug) VALUES ('RentalBudi');
     RAISE EXCEPTION 'GAGAL: slug huruf besar diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - owners_slug_format tolak hyphen ujung & huruf besar', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - owners_slug_format tolak hyphen ujung & huruf besar', n;
   END;
 
   -- 3 · owners_slug_format: 2 karakter ditolak (minimum 3)
@@ -335,7 +407,7 @@ BEGIN
     INSERT INTO owners (slug) VALUES ('ab');
     RAISE EXCEPTION 'GAGAL: slug 2 karakter diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - owners_slug_format tolak < 3 karakter', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - owners_slug_format tolak < 3 karakter', n;
   END;
 
   -- 4 · owners_slug_not_punycode: xn-- ditolak
@@ -343,7 +415,7 @@ BEGIN
     INSERT INTO owners (slug) VALUES ('xn--80ak6aa92e');
     RAISE EXCEPTION 'GAGAL: slug punycode diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - owners_slug_not_punycode tolak xn--', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - owners_slug_not_punycode tolak xn--', n;
   END;
 
   -- 5 · owners_slug_not_reserved
@@ -351,12 +423,12 @@ BEGIN
     INSERT INTO owners (slug) VALUES ('api');
     RAISE EXCEPTION 'GAGAL: subdomain terlarang diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - owners_slug_not_reserved tolak "api"', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - owners_slug_not_reserved tolak "api"', n;
   END;
 
   -- 6 · slug sah tetap diterima (constraint tidak kebablasan)
   INSERT INTO owners (slug) VALUES ('rental-budi-2021');
-  n := n+1; RAISE NOTICE 'OK %/47 - slug sah tetap diterima', n;
+  n := n+1; RAISE NOTICE 'OK %/57 - slug sah tetap diterima', n;
 
   -- 7 · resource_units_code_per_owner: kode sama, owner sama → tolak
   INSERT INTO resource_units (owner_id, code) VALUES (o1, 'B 1234 XY');
@@ -364,17 +436,17 @@ BEGIN
     INSERT INTO resource_units (owner_id, code) VALUES (o1, 'B 1234 XY');
     RAISE EXCEPTION 'GAGAL: kode unit ganda pada satu owner diterima';
   EXCEPTION WHEN unique_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - kode unit unik per owner', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - kode unit unik per owner', n;
   END;
 
   -- 8 · owner lain boleh pakai kode yang sama
   INSERT INTO resource_units (owner_id, code) VALUES (o2, 'B 1234 XY');
-  n := n+1; RAISE NOTICE 'OK %/47 - owner lain boleh kode sama', n;
+  n := n+1; RAISE NOTICE 'OK %/57 - owner lain boleh kode sama', n;
 
   -- 9 · unit terhapus dikecualikan dari unique
   UPDATE resource_units SET deleted_at = now() WHERE owner_id = o2;
   INSERT INTO resource_units (owner_id, code) VALUES (o2, 'B 1234 XY');
-  n := n+1; RAISE NOTICE 'OK %/47 - partial index kecualikan deleted_at', n;
+  n := n+1; RAISE NOTICE 'OK %/57 - partial index kecualikan deleted_at', n;
 
   -- 10 · bookings_code_per_owner
   INSERT INTO bookings (id, owner_id, code, resource_unit_id, start_at, end_at,
@@ -388,7 +460,7 @@ BEGIN
             '2026-10-05 09:00+07', 'reserved');
     RAISE EXCEPTION 'GAGAL: kode booking ganda pada satu owner diterima';
   EXCEPTION WHEN unique_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - kode booking unik per owner', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - kode booking unik per owner', n;
   END;
 
   -- 11 · bookings_range_valid
@@ -399,7 +471,7 @@ BEGIN
             '2026-09-03 09:00+07', 'reserved');
     RAISE EXCEPTION 'GAGAL: end_at sebelum start_at diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - bookings_range_valid', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - bookings_range_valid', n;
   END;
 
   -- 12 · bookings_buffer_valid
@@ -410,7 +482,7 @@ BEGIN
             '2026-09-04 09:00+07', 'reserved');
     RAISE EXCEPTION 'GAGAL: end_at_with_buffer < end_at diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - bookings_buffer_valid', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - bookings_buffer_valid', n;
   END;
 
   -- 13 · bookings_deposit_nonneg: potongan > deposit ditolak
@@ -418,19 +490,19 @@ BEGIN
     UPDATE bookings SET deposit_amount = 500000, deposit_deducted = 700000 WHERE id = b1;
     RAISE EXCEPTION 'GAGAL: deposit_deducted melebihi deposit_amount diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - deposit tidak bisa dipotong lebih dari nilainya', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - deposit tidak bisa dipotong lebih dari nilainya', n;
   END;
 
   -- 14 · deposit habis persis (= amount) harus DITERIMA
   UPDATE bookings SET deposit_amount = 500000, deposit_deducted = 500000 WHERE id = b1;
-  n := n+1; RAISE NOTICE 'OK %/47 - deposit habis persis diterima', n;
+  n := n+1; RAISE NOTICE 'OK %/57 - deposit habis persis diterima', n;
 
   -- 15 · booking_counters FK ke owners
   BEGIN
     INSERT INTO booking_counters (owner_id) VALUES (u1);
     RAISE EXCEPTION 'GAGAL: booking_counters menerima owner_id asing';
   EXCEPTION WHEN foreign_key_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - booking_counters FK ke owners', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - booking_counters FK ke owners', n;
   END;
 
   -- 16 · handovers_one_per_direction
@@ -438,7 +510,7 @@ BEGIN
     INSERT INTO handovers (booking_id, direction) VALUES (b1, 'return');
     RAISE EXCEPTION 'GAGAL: dua handover arah sama pada satu booking diterima';
   EXCEPTION WHEN unique_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - satu handover per arah per booking', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - satu handover per arah per booking', n;
   END;
 
   -- 17 · invoices_one_subject: dua-duanya NULL ditolak
@@ -446,7 +518,7 @@ BEGIN
     INSERT INTO invoices (owner_id) VALUES (o1);
     RAISE EXCEPTION 'GAGAL: invoice tanpa subjek diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - invoices_one_subject tolak nol subjek', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - invoices_one_subject tolak nol subjek', n;
   END;
 
   -- 18 · invoices_one_subject: dua-duanya terisi ditolak; lalu satu subjek diterima
@@ -455,7 +527,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: invoice dua subjek diterima';
   EXCEPTION WHEN check_violation THEN
     INSERT INTO invoices (id, owner_id, booking_id) VALUES (i1, o1, b1);
-    n := n+1; RAISE NOTICE 'OK %/47 - invoices_one_subject tolak dua subjek', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - invoices_one_subject tolak dua subjek', n;
   END;
 
   -- 19 · invoice_lines_damage_needs_photo + invoice_lines_sign
@@ -465,7 +537,7 @@ BEGIN
   EXCEPTION WHEN check_violation THEN
     INSERT INTO invoice_lines (invoice_id, kind, amount, handover_photo_id)
     VALUES (i1, 'damage', 500000, ph);
-    n := n+1; RAISE NOTICE 'OK %/47 - baris damage wajib merujuk foto', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - baris damage wajib merujuk foto', n;
   END;
 
   BEGIN
@@ -473,7 +545,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: discount bernilai positif diterima';
   EXCEPTION WHEN check_violation THEN
     INSERT INTO invoice_lines (invoice_id, kind, amount) VALUES (i1, 'discount', -50000);
-    n := n+1; RAISE NOTICE 'OK %/47 - discount wajib negatif, rent wajib positif', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - discount wajib negatif, rent wajib positif', n;
   END;
 
   -- 20 · payments_one_success_per_invoice + notifications
@@ -483,7 +555,7 @@ BEGIN
     INSERT INTO payments (invoice_id, status) VALUES (i1, 'success');
     RAISE EXCEPTION 'GAGAL: dua pembayaran sukses pada satu invoice diterima';
   EXCEPTION WHEN unique_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - satu pembayaran sukses per invoice', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - satu pembayaran sukses per invoice', n;
   END;
 
   INSERT INTO notifications (booking_id, kind, scheduled_date, attempt_no)
@@ -518,7 +590,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: email yang sama diterima di usaha kedua';
   EXCEPTION WHEN unique_violation THEN
     INSERT INTO users (owner_id, email) VALUES (o2, 'sari@contoh.id');
-    n := n+1; RAISE NOTICE 'OK %/47 - email unik global, alamat lain tetap boleh', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - email unik global, alamat lain tetap boleh', n;
   END;
 
   -- 23 · refresh_tokens_user_matches_owner: token tidak bisa menunjuk usaha lain.
@@ -531,7 +603,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: refresh token ber-owner asing diterima';
   EXCEPTION WHEN foreign_key_violation THEN
     INSERT INTO refresh_tokens (owner_id, user_id, token_hash) VALUES (o1, us, 'h1');
-    n := n+1; RAISE NOTICE 'OK %/47 - refresh token wajib usaha yang sama dengan user', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - refresh token wajib usaha yang sama dengan user', n;
   END;
 
   -- ══ BR-016 · kosong berarti tidak berlaku; NOL dilarang ══
@@ -544,20 +616,20 @@ BEGIN
     INSERT INTO resources (owner_id, deposit_amount) VALUES (o1, 0);
     RAISE EXCEPTION 'GAGAL: deposit_amount = 0 diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - deposit_amount 0 ditolak (pakai NULL)', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - deposit_amount 0 ditolak (pakai NULL)', n;
   END;
 
   -- 25 · ...tapi NULL DITERIMA -- ini yang membuat "tanpa deposit" bisa ditulis
   INSERT INTO resources (owner_id, deposit_amount, late_fee_per_unit)
   VALUES (o1, NULL, NULL);
-  n := n+1; RAISE NOTICE 'OK %/47 - deposit & denda NULL diterima', n;
+  n := n+1; RAISE NOTICE 'OK %/57 - deposit & denda NULL diterima', n;
 
   -- 26 · resources_late_fee_positive: 0 ditolak
   BEGIN
     INSERT INTO resources (owner_id, late_fee_per_unit) VALUES (o1, 0);
     RAISE EXCEPTION 'GAGAL: late_fee_per_unit = 0 diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - late_fee_per_unit 0 ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - late_fee_per_unit 0 ditolak', n;
   END;
 
   -- 27 · resources_min_duration_positive: 0 ditolak
@@ -565,7 +637,7 @@ BEGIN
     INSERT INTO resources (owner_id, min_duration) VALUES (o1, 0);
     RAISE EXCEPTION 'GAGAL: min_duration = 0 diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - min_duration 0 ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - min_duration 0 ditolak', n;
   END;
 
   -- 28 · resources_max_duration_positive: 0 ditolak
@@ -573,7 +645,7 @@ BEGIN
     INSERT INTO resources (owner_id, max_duration) VALUES (o1, 0);
     RAISE EXCEPTION 'GAGAL: max_duration = 0 diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - max_duration 0 ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - max_duration 0 ditolak', n;
   END;
 
   -- 29 · resources_duration_order: max < min ditolak; satu sisi kosong diterima
@@ -582,7 +654,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: max_duration < min_duration diterima';
   EXCEPTION WHEN check_violation THEN
     INSERT INTO resources (owner_id, min_duration, max_duration) VALUES (o1, 7, NULL);
-    n := n+1; RAISE NOTICE 'OK %/47 - max < min ditolak, batas sepihak diterima', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - max < min ditolak, batas sepihak diterima', n;
   END;
 
   -- 30 · resources_buffer_nonneg: negatif ditolak
@@ -590,7 +662,7 @@ BEGIN
     INSERT INTO resources (owner_id, buffer_minutes) VALUES (o1, -1);
     RAISE EXCEPTION 'GAGAL: buffer_minutes negatif diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - buffer_minutes negatif ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - buffer_minutes negatif ditolak', n;
   END;
 
   -- 31 · bookings_deposit_nonneg: booking TANPA deposit tidak boleh punya potongan.
@@ -606,7 +678,7 @@ BEGIN
             '2026-09-05 09:00+07', 'reserved', NULL, 100000);
     RAISE EXCEPTION 'GAGAL: potongan pada booking tanpa deposit diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - tanpa deposit, potongan ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - tanpa deposit, potongan ditolak', n;
   END;
 
   -- 32 · bookings_deposit_waiver_complete: dibebaskan tanpa alasan ditolak
@@ -615,14 +687,14 @@ BEGIN
     WHERE id = b1;
     RAISE EXCEPTION 'GAGAL: pembebasan tanpa alasan diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - pembebasan wajib berasalan', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - pembebasan wajib berasalan', n;
   END;
 
   -- 33 · ...bertiga lengkap DITERIMA
   UPDATE bookings SET deposit_waived_at = now(), deposit_waived_by = u1,
                       deposit_waiver_reason = 'pelanggan lama, disepakati pemilik'
   WHERE id = b1;
-  n := n+1; RAISE NOTICE 'OK %/47 - pembebasan lengkap diterima', n;
+  n := n+1; RAISE NOTICE 'OK %/57 - pembebasan lengkap diterima', n;
 
   -- ══ BR-024 · prefix kode booking milik pemilik ══
   -- Kode ini dibacakan lewat telepon. Format dijaga database supaya tidak ada
@@ -634,7 +706,7 @@ BEGIN
     INSERT INTO owners (slug, booking_code_prefix) VALUES ('rental-kecil', 'rb');
     RAISE EXCEPTION 'GAGAL: prefix huruf kecil diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - prefix huruf kecil ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - prefix huruf kecil ditolak', n;
   END;
 
   -- 35 · ...lebih dari 6 karakter ditolak; 6 karakter DITERIMA
@@ -643,7 +715,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: prefix 7 karakter diterima';
   EXCEPTION WHEN check_violation THEN
     INSERT INTO owners (slug, booking_code_prefix) VALUES ('rental-enam', 'MTR999');
-    n := n+1; RAISE NOTICE 'OK %/47 - prefix 7 karakter ditolak, 6 diterima', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - prefix 7 karakter ditolak, 6 diterima', n;
   END;
 
   -- ══ BR-012 + BR-017 · satuan harga & preset pasar ══
@@ -656,7 +728,7 @@ BEGIN
     INSERT INTO resources (owner_id, pricing_unit) VALUES (o1, 'bulan');
     RAISE EXCEPTION 'GAGAL: pricing_unit asing diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - pricing_unit asing ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - pricing_unit asing ditolak', n;
   END;
 
   -- 37 · ...dan yang TIDAK dikirim jatuh ke 'day', bukan NULL
@@ -664,14 +736,14 @@ BEGIN
   IF (SELECT pricing_unit FROM resources WHERE id = r_id) IS DISTINCT FROM 'day' THEN
     RAISE EXCEPTION 'GAGAL: pricing_unit tanpa nilai tidak jatuh ke day';
   END IF;
-  n := n+1; RAISE NOTICE 'OK %/47 - pricing_unit default day, bukan NULL', n;
+  n := n+1; RAISE NOTICE 'OK %/57 - pricing_unit default day, bukan NULL', n;
 
   -- 38 · owners_business_type_valid: preset asing ditolak
   BEGIN
     INSERT INTO owners (slug, business_type) VALUES ('rental-warung', 'warung');
     RAISE EXCEPTION 'GAGAL: business_type asing diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - business_type asing ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - business_type asing ditolak', n;
   END;
 
   -- 39 · BR-025 · slug NULL diterima, dan BANYAK slug NULL tidak saling tabrakan.
@@ -680,7 +752,7 @@ BEGIN
   --      keempat CHECK slug lolos saat NULL, dan unique index tidak menganggap dua
   --      NULL sebagai duplikat.
   INSERT INTO owners (slug) VALUES (NULL), (NULL);
-  n := n+1; RAISE NOTICE 'OK %/47 - slug NULL diterima, dua NULL tidak tabrakan', n;
+  n := n+1; RAISE NOTICE 'OK %/57 - slug NULL diterima, dua NULL tidak tabrakan', n;
 
   -- ══ BR-057 · tenggat bayar & toleransi no-show ══
 
@@ -689,7 +761,7 @@ BEGIN
     INSERT INTO owners (slug, payment_due_hours) VALUES ('rental-noljam', 0);
     RAISE EXCEPTION 'GAGAL: payment_due_hours = 0 diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - payment_due_hours 0 ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - payment_due_hours 0 ditolak', n;
   END;
 
   -- 41 · owners_no_show_tolerance_nonneg: negatif ditolak, tapi 0 DITERIMA
@@ -698,7 +770,7 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: no_show_tolerance_hours negatif diterima';
   EXCEPTION WHEN check_violation THEN
     INSERT INTO owners (slug, no_show_tolerance_hours) VALUES ('rental-ketat', 0);
-    n := n+1; RAISE NOTICE 'OK %/47 - toleransi negatif ditolak, 0 diterima', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - toleransi negatif ditolak, 0 diterima', n;
   END;
 
   -- ══ BR-073 · korelasi webhook WhatsApp ══
@@ -714,13 +786,13 @@ BEGIN
     VALUES (b1, 'return_reminder', '2026-09-10', 'wamid.HBgN123');
     RAISE EXCEPTION 'GAGAL: provider_message_id ganda diterima';
   EXCEPTION WHEN unique_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - wamid ganda ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - wamid ganda ditolak', n;
   END;
 
   -- 43 · ...tapi banyak NULL boleh berdampingan (belum terkirim)
   INSERT INTO notifications (booking_id, kind, scheduled_date)
   VALUES (b1, 'invoice_link', '2026-09-11'), (b1, 'payment_due_reminder', '2026-09-11');
-  n := n+1; RAISE NOTICE 'OK %/47 - banyak wamid NULL berdampingan', n;
+  n := n+1; RAISE NOTICE 'OK %/57 - banyak wamid NULL berdampingan', n;
 
   -- ══ BR-010 + BR-013 · status katalog, dan siapa pemilik jenis barangnya ══
 
@@ -729,7 +801,7 @@ BEGIN
     INSERT INTO resources (owner_id, status) VALUES (o1, 'draft');
     RAISE EXCEPTION 'GAGAL: status resource asing diterima';
   EXCEPTION WHEN check_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - status resource asing ditolak', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - status resource asing ditolak', n;
   END;
 
   -- 45 · resource_units_status_valid: 'rusak' ditolak, ketiga nilai sah diterima.
@@ -742,7 +814,7 @@ BEGIN
     INSERT INTO resource_units (owner_id, code, status)
     VALUES (o1, 'B 1 AKTIF', 'active'), (o1, 'B 2 BENGKEL', 'maintenance'),
            (o1, 'B 3 PENSIUN', 'retired');
-    n := n+1; RAISE NOTICE 'OK %/47 - status unit asing ditolak, ketiganya diterima', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - status unit asing ditolak, ketiganya diterima', n;
   END;
 
   -- 46 · resource_units_resource_matches_owner: unit o2 tidak bisa menunjuk
@@ -752,7 +824,7 @@ BEGIN
     INSERT INTO resource_units (owner_id, resource_id, code) VALUES (o2, r_id, 'B 5 CURI');
     RAISE EXCEPTION 'GAGAL: unit menunjuk resource pemilik lain diterima';
   EXCEPTION WHEN foreign_key_violation THEN
-    n := n+1; RAISE NOTICE 'OK %/47 - unit tidak bisa menunjuk resource pemilik lain', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - unit tidak bisa menunjuk resource pemilik lain', n;
   END;
 
   -- 47 · resources_base_price_nonneg: negatif ditolak, NOL diterima.
@@ -763,13 +835,141 @@ BEGIN
     RAISE EXCEPTION 'GAGAL: base_price negatif diterima';
   EXCEPTION WHEN check_violation THEN
     INSERT INTO resources (owner_id, base_price) VALUES (o1, 0);
-    n := n+1; RAISE NOTICE 'OK %/47 - base_price negatif ditolak, 0 diterima', n;
+    n := n+1; RAISE NOTICE 'OK %/57 - base_price negatif ditolak, 0 diterima', n;
   END;
 
-  IF n <> 47 THEN
-    RAISE EXCEPTION 'GAGAL: hanya % dari 47 kasus terhitung', n;
+  -- Fixture untuk kasus 48-57. r_id dibuat di kasus 37 dan milik o1.
+  INSERT INTO resources (owner_id) VALUES (o1) RETURNING id INTO r_id2;
+  INSERT INTO resource_units (owner_id, resource_id, code)
+  VALUES (o1, r_id, 'B 6 SPEK') RETURNING id INTO u_id;
+
+  -- ══ BR-094 · atribut kendaraan, dan tiga aturan lintas kolom ══
+  -- Ketiganya alasan tabel ini bukan jsonb. Tiap satu diuji DUA ARAH: constraint
+  -- yang kebablasan (menolak yang sah) sama rusaknya dengan yang bolong.
+
+  -- 48 · vehicle_specs enum: jenis, transmisi, dan BBM asing ditolak
+  BEGIN
+    INSERT INTO vehicle_specs (resource_id, owner_id, vehicle_type, seats)
+    VALUES (r_id, o1, 'truk', 4);
+    RAISE EXCEPTION 'GAGAL: vehicle_type asing diterima';
+  EXCEPTION WHEN check_violation THEN
+    n := n+1; RAISE NOTICE 'OK %/57 - vehicle_type asing ditolak', n;
+  END;
+
+  -- 49 · vehicle_specs_seats_car: DUA arah dari satu kesetaraan.
+  --      Mobil tanpa kursi ditolak, DAN motor berkursi ditolak. Versi
+  --      "mobil wajib punya kursi" saja lolos kasus kedua tanpa test merah.
+  BEGIN
+    INSERT INTO vehicle_specs (resource_id, owner_id, vehicle_type)
+    VALUES (r_id, o1, 'car');
+    RAISE EXCEPTION 'GAGAL: mobil tanpa jumlah kursi diterima';
+  EXCEPTION WHEN check_violation THEN
+    BEGIN
+      INSERT INTO vehicle_specs (resource_id, owner_id, vehicle_type, seats)
+      VALUES (r_id, o1, 'motorcycle', 2);
+      RAISE EXCEPTION 'GAGAL: motor berkursi diterima';
+    EXCEPTION WHEN check_violation THEN
+      n := n+1; RAISE NOTICE 'OK %/57 - kursi wajib mobil DAN dilarang motor', n;
+    END;
+  END;
+
+  -- 50 · vehicle_specs_clutch_moto: kopling di mobil ditolak, di motor diterima
+  BEGIN
+    INSERT INTO vehicle_specs (resource_id, owner_id, vehicle_type, seats, transmission)
+    VALUES (r_id, o1, 'car', 7, 'clutch');
+    RAISE EXCEPTION 'GAGAL: transmisi kopling pada mobil diterima';
+  EXCEPTION WHEN check_violation THEN
+    INSERT INTO vehicle_specs (resource_id, owner_id, vehicle_type, transmission)
+    VALUES (r_id, o1, 'motorcycle', 'clutch');
+    n := n+1; RAISE NOTICE 'OK %/57 - kopling ditolak di mobil, diterima di motor', n;
+  END;
+  DELETE FROM vehicle_specs WHERE resource_id = r_id;
+
+  -- 51 · vehicle_specs_diesel_car: diesel di motor ditolak, di mobil diterima
+  BEGIN
+    INSERT INTO vehicle_specs (resource_id, owner_id, vehicle_type, fuel)
+    VALUES (r_id, o1, 'motorcycle', 'diesel');
+    RAISE EXCEPTION 'GAGAL: motor diesel diterima';
+  EXCEPTION WHEN check_violation THEN
+    INSERT INTO vehicle_specs (resource_id, owner_id, vehicle_type, seats, fuel)
+    VALUES (r_id, o1, 'car', 4, 'diesel');
+    n := n+1; RAISE NOTICE 'OK %/57 - diesel ditolak di motor, diterima di mobil', n;
+  END;
+  -- resource_id adalah PRIMARY KEY, jadi baris yang baru saja berhasil akan
+  -- membuat kasus 53 melempar unique_violation, bukan foreign_key_violation --
+  -- dan kasus itu akan lulus karena sebab yang salah.
+  DELETE FROM vehicle_specs WHERE resource_id = r_id;
+
+  -- 52 · vehicle_specs_seats_range: 1 dan 21 ditolak, 2 dan 20 diterima
+  BEGIN
+    INSERT INTO vehicle_specs (resource_id, owner_id, vehicle_type, seats)
+    VALUES (r_id2, o1, 'car', 21);
+    RAISE EXCEPTION 'GAGAL: 21 kursi diterima';
+  EXCEPTION WHEN check_violation THEN
+    INSERT INTO vehicle_specs (resource_id, owner_id, vehicle_type, seats)
+    VALUES (r_id2, o1, 'car', 20);
+    n := n+1; RAISE NOTICE 'OK %/57 - kursi di luar 2-20 ditolak, batasnya diterima', n;
+  END;
+
+  -- 53 · spek tidak bisa menunjuk resource pemilik lain (FK komposit)
+  BEGIN
+    INSERT INTO vehicle_specs (resource_id, owner_id, vehicle_type, seats)
+    VALUES (r_id, o2, 'car', 4);
+    RAISE EXCEPTION 'GAGAL: spek menunjuk resource pemilik lain diterima';
+  EXCEPTION WHEN foreign_key_violation THEN
+    n := n+1; RAISE NOTICE 'OK %/57 - spek tidak bisa menunjuk resource pemilik lain', n;
+  END;
+
+  -- 54 · detail unit tidak bisa menunjuk unit pemilik lain (FK komposit)
+  -- Yang salah duluan, supaya PK-nya masih bebas dan yang dilempar benar-benar
+  -- foreign_key_violation.
+  BEGIN
+    INSERT INTO vehicle_unit_details (resource_unit_id, owner_id) VALUES (u_id, o2);
+    RAISE EXCEPTION 'GAGAL: detail menunjuk unit pemilik lain diterima';
+  EXCEPTION WHEN foreign_key_violation THEN
+    INSERT INTO vehicle_unit_details (resource_unit_id, owner_id) VALUES (u_id, o1);
+    n := n+1; RAISE NOTICE 'OK %/57 - detail tidak bisa menunjuk unit pemilik lain', n;
+  END;
+
+  -- 55 · vehicle_unit_details_year_range: 1989 ditolak, 1990 diterima.
+  --      Batas atas 2100 sengaja longgar: "tahun depan" butuh now(), dan CHECK
+  --      wajib IMMUTABLE. Aplikasi yang menyempitkannya.
+  DELETE FROM vehicle_unit_details WHERE resource_unit_id = u_id;
+  BEGIN
+    INSERT INTO vehicle_unit_details (resource_unit_id, owner_id, year)
+    VALUES (u_id, o1, 1989);
+    RAISE EXCEPTION 'GAGAL: tahun 1989 diterima';
+  EXCEPTION WHEN check_violation THEN
+    INSERT INTO vehicle_unit_details (resource_unit_id, owner_id, year)
+    VALUES (u_id, o1, 1990);
+    n := n+1; RAISE NOTICE 'OK %/57 - tahun di luar 1990-2100 ditolak', n;
+  END;
+
+  -- ══ BR-095 + BR-096 · teks yang dirender halaman publik apa adanya ══
+
+  -- 56 · panjang S&K dibatasi database; teks 501 karakter ditolak
+  BEGIN
+    INSERT INTO resources (owner_id, terms_excludes)
+    VALUES (o1, repeat('x', 501));
+    RAISE EXCEPTION 'GAGAL: terms_excludes 501 karakter diterima';
+  EXCEPTION WHEN check_violation THEN
+    INSERT INTO resources (owner_id, terms_requirements) VALUES (o1, repeat('x', 1000));
+    n := n+1; RAISE NOTICE 'OK %/57 - S&K melebihi batas ditolak, batasnya diterima', n;
+  END;
+
+  -- 57 · owners_whatsapp_format: nomor lokal ditolak, E.164 diterima, NULL bebas
+  BEGIN
+    INSERT INTO owners (slug, whatsapp) VALUES ('rental-wa-salah', '08123456789');
+    RAISE EXCEPTION 'GAGAL: nomor format lokal diterima';
+  EXCEPTION WHEN check_violation THEN
+    INSERT INTO owners (slug, whatsapp) VALUES ('rental-wa-benar', '+628123456789');
+    n := n+1; RAISE NOTICE 'OK %/57 - whatsapp wajib +62, NULL tetap boleh', n;
+  END;
+
+  IF n <> 57 THEN
+    RAISE EXCEPTION 'GAGAL: hanya % dari 57 kasus terhitung', n;
   END IF;
-  RAISE NOTICE '--- 47/47 kasus, 37 constraint 03-erd.md §3 terverifikasi ---';
+  RAISE NOTICE '--- 57/57 kasus, 53 constraint 03-erd.md §3 terverifikasi ---';
 END $$;
 
 -- ══════════════════ BR-001 · isolasi pemilik ditegakkan database ══════════════════
