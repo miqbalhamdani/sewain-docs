@@ -159,7 +159,7 @@ erDiagram
         text phone
         text id_type "ktp | sim | passport"
         bytea id_number_enc "terenkripsi (BR-085)"
-        text id_photo_key "terenkripsi (BR-085)"
+        text id_photo_key "kunci objek; terenkripsi at-rest di R2, bukan aplikasi (BR-085)"
         bool is_blacklisted "BR-028"
         text blacklist_reason
         timestamptz id_purge_after "BR-086 - DITUNDA, tidak dibaca job mana pun di fase 1"
@@ -344,8 +344,8 @@ createdb sewain_scratch && psql sewain_scratch -f docs/03-verify-overlap-constra
 ```
 
 **Constraint sisanya punya skripnya sendiri:** `docs/03-verify-constraints.sql` — pola
-sama: **57 `NOTICE OK` constraint plus 6 `NOTICE OK RLS`** yang membuktikan isolasi BR-001.
-Kasusnya 57 untuk 53 constraint karena beberapa diuji dari dua arah — menolak yang salah **dan**
+sama: **66 `NOTICE OK` constraint plus 6 `NOTICE OK RLS`** yang membuktikan isolasi BR-001.
+Kasusnya 66 untuk 64 constraint karena beberapa diuji dari dua arah — menolak yang salah **dan**
 menerima yang benar, supaya constraint yang kebablasan ikut ketahuan.
 Yang RLS diuji dari **peran non-superuser**: superuser melewati RLS sepenuhnya, `FORCE`
 sekalipun, jadi mengujinya sebagai diri sendiri akan lulus secara palsu. Tabel di dalamnya sengaja minimal (hanya kolom yang
@@ -708,12 +708,80 @@ ALTER TABLE bookings
   CHECK (num_nonnulls(deposit_waived_at, deposit_waived_by, deposit_waiver_reason)
          IN (0, 3));
 
+-- BR-022 + BR-023 + BR-027: status dan alasan batal. Status asing tidak bikin error
+-- di mana pun -- ia bikin booking yang tidak mengunci unit (exclusion constraint cuma
+-- melihat 'reserved' dan 'picked_up'), mode gagal yang sama dengan yang ditutup
+-- resource_units_status_valid. Alasan batal terisi TEPAT saat status 'cancelled':
+-- 'manual' dari tombol batal (S1-026), dua sisanya dari job S1-052.
+ALTER TABLE bookings
+  ADD CONSTRAINT bookings_status_valid
+    CHECK (status IN ('draft', 'reserved', 'picked_up', 'returned',
+                      'completed', 'cancelled', 'no_show')),
+  ADD CONSTRAINT bookings_source_valid
+    CHECK (source IN ('staff', 'public_page')),
+  ADD CONSTRAINT bookings_cancelled_reason_valid
+    CHECK ((status = 'cancelled') = (cancelled_reason IS NOT NULL)
+           AND (cancelled_reason IS NULL
+                OR cancelled_reason IN ('manual', 'expired', 'payment_expired')));
+
+-- BR-014 + BR-016: snapshot mewarisi aturan sumbernya. NULL tersalin sebagai NULL,
+-- dan 0 tetap dilarang -- kalau tidak, satu jalur insert yang menulis COALESCE(x, 0)
+-- menghidupkan lagi dua cara menulis "tanpa deposit" di tabel yang justru menagih.
+ALTER TABLE bookings
+  ADD CONSTRAINT bookings_snapshot_valid
+    CHECK (unit_price >= 0 AND duration_qty > 0 AND subtotal >= 0
+           AND (deposit_amount    IS NULL OR deposit_amount    > 0)
+           AND (late_fee_per_unit IS NULL OR late_fee_per_unit > 0));
+
+-- BR-001 + BR-029: booking tidak bisa menunjuk unit pemilik lain, DAN unitnya wajib
+-- milik resource yang tertulis di booking. Satu FK tiga kolom menutup keduanya:
+-- (unit, resource, owner) harus satu baris di resource_units, dan unit itu sendiri
+-- sudah terikat ke resource pemiliknya lewat resource_units_resource_matches_owner.
+-- Tukar unit ke resource lain (BR-029) karena itu DITOLAK DATABASE, bukan cuma
+-- dicek aplikasi -- snapshot harga booking milik resource asal, dan unit dari jenis
+-- barang lain akan menagih harga yang salah tanpa satu pun error.
+ALTER TABLE resource_units ADD CONSTRAINT resource_units_id_resource_owner_uq
+  UNIQUE (id, resource_id, owner_id);
+ALTER TABLE bookings ADD CONSTRAINT bookings_unit_matches_resource
+  FOREIGN KEY (resource_unit_id, resource_id, owner_id)
+  REFERENCES resource_units (id, resource_id, owner_id);
+
+-- BR-001: penyewa juga. Booking pemilik A dengan customer_id milik B akan
+-- membocorkan nama dan telepon B lewat GET /bookings/{id}.
+ALTER TABLE customers ADD CONSTRAINT customers_id_owner_uq UNIQUE (id, owner_id);
+ALTER TABLE bookings ADD CONSTRAINT bookings_customer_matches_owner
+  FOREIGN KEY (customer_id, owner_id) REFERENCES customers (id, owner_id);
+
+-- BR-028 + BR-085: penyewa. Diblokir tanpa alasan sama saja dengan tidak bisa
+-- dijelaskan ke operator yang ditolak sistemnya (BR-028: "operator melihat alasannya").
+-- Alasan dikosongkan bersama saat dibuka, jadi keduanya satu kesetaraan.
+ALTER TABLE customers
+  ALTER COLUMN is_blacklisted SET NOT NULL,
+  ALTER COLUMN is_blacklisted SET DEFAULT false,
+  ADD CONSTRAINT customers_id_type_valid
+    CHECK (id_type IS NULL OR id_type IN ('ktp', 'sim', 'passport')),
+  ADD CONSTRAINT customers_blacklist_has_reason
+    CHECK (is_blacklisted = (blacklist_reason IS NOT NULL));
+
+-- BR-085: audit_logs append-only DITEGAKKAN DATABASE, bukan cuma "tidak ada query
+-- UPDATE di db/queries/". app_user kehilangan UPDATE dan DELETE pada tabel ini,
+-- jadi jalur yang lupa disiplinnya mendapat error, bukan jejak yang bisa diubah.
+-- Pelakunya terikat ke pemilik yang sama dengan pola refresh_tokens_user_matches_owner.
+ALTER TABLE audit_logs ADD CONSTRAINT audit_logs_actor_matches_owner
+  FOREIGN KEY (actor_user_id, owner_id) REFERENCES users (id, owner_id);
+REVOKE UPDATE, DELETE ON audit_logs FROM app_user;
+SELECT enable_owner_rls('customers');
+SELECT enable_owner_rls('audit_logs');
+SELECT enable_owner_rls('bookings');
+
 -- BR-024: kode unik per pemilik, tidak pernah dipakai ulang.
 CREATE UNIQUE INDEX bookings_code_per_owner ON bookings (owner_id, code);
 CREATE TABLE booking_counters (
   owner_id uuid PRIMARY KEY REFERENCES owners(id),
   last_number bigint NOT NULL DEFAULT 0   -- hanya naik, tidak pernah turun
 );
+-- Ber-RLS seperti tabel ber-owner_id lain: pencacah adalah jumlah booking usaha itu.
+SELECT enable_owner_rls('booking_counters');
 
 -- BR-024: prefiksnya milik pemilik. 2-6 karakter karena kode ini dibacakan lewat
 -- telepon; prefix panjang menghapus seluruh gunanya. TIDAK unik global - dua
@@ -828,9 +896,10 @@ ALTER TABLE invoices ADD CONSTRAINT invoices_one_subject
 **Index untuk kecepatan** (PRD §9: < 1 detik untuk 500 unit × 12 bulan):
 
 ```sql
-CREATE INDEX bookings_unit_range ON bookings
-  USING gist (resource_unit_id, tstzrange(start_at, end_at_with_buffer, '[)'))
-  WHERE status IN ('reserved','picked_up') AND deleted_at IS NULL;
+-- Tidak ada index gist terpisah untuk pencarian rentang per unit: bookings_no_overlap
+-- SUDAH membangun index gist persis itu -- kolom, ekspresi, dan predikat WHERE yang
+-- sama. Versi lama dokumen ini menulisnya dua kali; index kedua cuma menggandakan
+-- biaya tiap INSERT. Query ketersediaan memakai index milik constraint.
 CREATE INDEX bookings_owner_status_start ON bookings (owner_id, status, start_at);
 CREATE INDEX resource_units_owner_resource_status
   ON resource_units (owner_id, resource_id, status) WHERE deleted_at IS NULL;

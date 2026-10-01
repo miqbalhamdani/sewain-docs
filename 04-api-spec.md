@@ -609,6 +609,14 @@ Empat hal yang mengikat bentuk ini:
 - Unit berstatus `retired` tidak punya lajur sama sekali; unit `maintenance` punya
   lajur dengan satu segmen `maintenance` sepanjang rentangnya (BR-013).
 
+**`reserved_paid` belum terbit sampai `S1-041`** membuat `invoices`: sebelum itu setiap
+`reserved` adalah `reserved_unpaid`, yang memang benar — belum ada yang dibayar. Rentang
+`from`–`to` dibatasi 366 hari.
+
+`duration_qty` = `ceil(durasi / satuan)`, dengan `month` = **30 hari tetap**; bulan
+kalender membuat dua durasi yang sama berbeda harga. `min_duration`/`max_duration`
+dibandingkan dengan `duration_qty`, dalam satuan harga resource.
+
 ### 3.4 Penyewa
 
 | Method | Path | Peran | BR |
@@ -622,6 +630,16 @@ Empat hal yang mengikat bentuk ini:
 `POST …/identity` menerima `{ "object_key": "pending/…", "id_type": "ktp" }` — foto
 diunggah lebih dulu langsung ke R2 (§2.2), dan server mem-`HEAD` kuncinya sebelum
 menyimpan (BR-093).
+
+`POST`/`PATCH /customers` menerima `id_type` + `id_number`; nomornya **dienkripsi aplikasi**
+(AES-256-GCM, kunci `IDENTITY_ENC_KEY` di luar database) dan respons hanya membawa
+`id_number_last4`. Blokir: `POST …/blacklist` `{ "reason": "…" }` wajib beralasan
+(`customers_blacklist_has_reason`), `DELETE` mengosongkan keduanya. `PATCH /customers/{id}`
+tidak punya field blokir sama sekali — operator boleh memanggilnya, BR-028 melarangnya
+memblokir. Izinnya `customers:blacklist`, owner saja.
+
+**Dua path `…/identity` belum terdaftar di `openapi.yaml`** — keduanya butuh presign dan
+`HEAD` dari `S1-033` (M3). `S1-021` tetap `wip` sampai itu.
 
 `GET …/identity` mengembalikan URL bertanda tangan berumur **5 menit** dan menulis satu
 baris `audit_logs` setiap kali dipanggil. Tanpa baris itu, endpoint ini melanggar
@@ -653,15 +671,27 @@ enkripsi aplikasi: URL bertanda tangan harus bisa dirender langsung oleh browser
 Server yang mengisi `code` dan seluruh kolom snapshot harga — termasuk `buffer_minutes`
 (BR-014, BR-015, BR-024). **`end_at_with_buffer` diisi database lewat trigger**, bukan
 oleh aplikasi: satu jalur insert yang lupa menghitungnya menghasilkan buffer `0` yang gagal
-senyap. Nilai yang dikirim klien untuk kolom itu **ditimpa**, bukan ditolak. Lihat `03-erd.md` §3. Harga yang dikirim klien diabaikan; kalau dikirim,
-`400`. Cek bentrok dijalankan lebih dulu supaya pesannya enak dibaca, tapi
+senyap. Nilai yang dikirim klien untuk kolom itu **ditimpa**, bukan ditolak. Lihat `03-erd.md` §3. Harga yang dikirim klien **ditolak `422`**, sama dengan
+setiap field yang dikelola server (§2) — versi lama dokumen ini menulis `400`, satu-satunya
+tempat di API yang membedakan field server berdasarkan namanya. Cek bentrok dijalankan lebih dulu supaya pesannya enak dibaca, tapi
 pelanggaran `bookings_no_overlap` tetap diterjemahkan ke `booking-conflict` yang
 sama — dua operator yang menekan Simpan pada detik yang sama menghasilkan tepat
 satu keberhasilan (BR-022).
 
 `PATCH /bookings/{id}` dengan `resource_unit_id` berbeda = tukar unit: hanya saat
 `reserved`, hanya ke unit dari resource yang sama, dan unit tujuan wajib lolos
-cek bentrok. Setelah `picked_up` → `unit-not-swappable` (BR-029).
+cek bentrok. Status lain → `unit-not-swappable` (BR-029). "Resource yang sama"
+**ditegakkan database** lewat FK tiga kolom `bookings_unit_matches_resource`
+(`03-erd.md` §3), jadi unit dari jenis barang lain dibalas `422` ber-field
+`resource_unit_id` — snapshot harganya milik resource asal. Di fase 1 `PATCH` hanya
+menerima `resource_unit_id`; mengubah tanggal adalah batal lalu buat ulang.
+
+`POST /bookings/{id}/cancel` tanpa body: hanya dari `draft`/`reserved`, alasan tercatat
+`manual`. Daftar alasan tertutup — `manual`, `expired`, `payment_expired` — dan terisi
+tepat saat status `cancelled` (`bookings_cancelled_reason_valid`).
+
+`GET /bookings` dan `GET /customers` berbentuk `{ "data": [...], "next_cursor": "…" }`.
+`GET /customers?q=` mencocokkan nama atau telepon.
 
 `POST /bookings/{id}/confirm` menjalankan **ulang** cek bentrok saat itu juga —
 draft tidak pernah menahan unit, jadi konfirmasi bisa gagal dan itu benar (BR-026).
