@@ -347,8 +347,8 @@ createdb sewain_scratch && psql sewain_scratch -f docs/03-verify-overlap-constra
 ```
 
 **Constraint sisanya punya skripnya sendiri:** `docs/03-verify-constraints.sql` — pola
-sama: **76 `NOTICE OK` constraint plus 6 `NOTICE OK RLS`** yang membuktikan isolasi BR-001.
-Kasusnya 76 untuk 78 constraint: beberapa diuji dari dua arah, dan empat target `UNIQUE (id, owner_id)` diuji lewat FK yang menunjuknya — menolak yang salah **dan**
+sama: **79 `NOTICE OK` constraint plus 6 `NOTICE OK RLS`** yang membuktikan isolasi BR-001.
+Kasusnya 79 untuk 81 constraint: beberapa diuji dari dua arah, dan empat target `UNIQUE (id, owner_id)` diuji lewat FK yang menunjuknya — menolak yang salah **dan**
 menerima yang benar, supaya constraint yang kebablasan ikut ketahuan.
 Yang RLS diuji dari **peran non-superuser**: superuser melewati RLS sepenuhnya, `FORCE`
 sekalipun, jadi mengujinya sebagai diri sendiri akan lulus secara palsu. Tabel di dalamnya sengaja minimal (hanya kolom yang
@@ -921,6 +921,10 @@ ALTER TABLE handovers ADD CONSTRAINT handovers_waiver_complete
   CHECK (num_nonnulls(late_fee_waived, waiver_reason) IN (0, 2)
          AND (late_fee_waived IS NULL OR (direction = 'return' AND late_fee_waived >= 0)));
 
+-- Pelaku serah-terima wajib dari usaha yang sama (pola users_id_owner_uq).
+ALTER TABLE handovers ADD CONSTRAINT handovers_performer_matches_owner
+  FOREIGN KEY (performed_by, owner_id) REFERENCES users (id, owner_id);
+
 SELECT enable_owner_rls('handovers');
 REVOKE UPDATE, DELETE ON handovers, handover_photos FROM app_user;
 
@@ -934,6 +938,10 @@ ALTER TABLE invoice_lines ADD CONSTRAINT invoice_lines_kind_valid
 -- sama-sama punya RB-0001/1, sama seperti kode booking (BR-024).
 CREATE UNIQUE INDEX invoices_number_per_owner ON invoices (owner_id, number);
 
+ALTER TABLE invoices ADD CONSTRAINT invoices_kind_valid
+  CHECK (kind IN ('booking', 'subscription'));
+ALTER TABLE invoices ADD CONSTRAINT invoices_customer_matches_owner
+  FOREIGN KEY (customer_id, owner_id) REFERENCES customers (id, owner_id);
 ALTER TABLE invoices ADD CONSTRAINT invoices_id_owner_uq UNIQUE (id, owner_id);
 ALTER TABLE invoices ADD CONSTRAINT invoices_booking_matches_owner
   FOREIGN KEY (booking_id, owner_id) REFERENCES bookings (id, owner_id);

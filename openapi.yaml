@@ -2614,8 +2614,13 @@ components:
         `blacklist_reason` terbaca semua peran di backoffice — BR-028 justru mewajibkan
         operator melihatnya. Ia tidak pernah keluar ke permukaan publik.
       required: [id, name, phone, id_type, id_number_last4, is_blacklisted,
-                 blacklist_reason, created_at]
+                 blacklist_reason, created_at, has_id_photo]
       properties:
+        has_id_photo:
+          type: boolean
+          description: |
+            Ada foto identitas tersimpan. Fotonya sendiri hanya lewat
+            `GET /customers/{id}/identity`, yang tercatat di audit log (BR-085).
         id:
           type: string
           format: uuid

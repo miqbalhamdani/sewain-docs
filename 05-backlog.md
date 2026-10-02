@@ -303,7 +303,7 @@ ada satu pun bagian lain yang layak dibangun.
 | ID | Item | Repo | Depends | Acceptance | Status | Owner |
 |---|---|---|---|---|---|---|
 | S1-020 | Skema `customers` + blacklist | BE | 007 | Hanya `owner` yang bisa memblokir/membuka (BR-028) | done | Claude |
-| S1-021 | Identitas terenkripsi + `audit_logs` | BE | 020 | Membaca foto identitas menulis satu baris audit dalam transaksi yang sama (BR-085) | wip | Claude — `audit_logs` (append-only lewat REVOKE) + enkripsi `id_number` selesai; **foto identitas menunggu `S1-033`** (presign/HEAD), jadi baris audit "membaca foto" belum punya pembaca |
+| S1-021 | Identitas terenkripsi + `audit_logs` | BE | 020 | Membaca foto identitas menulis satu baris audit dalam transaksi yang sama (BR-085) | done | Claude |
 | S1-022 | **Skema `bookings` + `end_at_with_buffer` + `bookings_no_overlap`** | BE | 015, 020 | Booking 3–5 Sep menolak booking 4–6 Sep untuk unit sama; berakhir 10:00 vs mulai 10:00 **tidak** bentrok; `end_at_with_buffer` diisi **trigger**, bukan aplikasi — nilai kiriman klien ditimpa; klausa `WHERE` constraint hanya memuat `reserved` & `picked_up`, jadi `draft` tidak mengunci (BR-023). **Jalankan `docs/03-verify-overlap-constraint.sql` dulu** — ia membuktikan semuanya di database scratch tanpa kode (BR-015, BR-022, BR-023) | done | Claude |
 | S1-023 | **Test konkurensi** — dua insert bersamaan | BE | 022 | `make test-race`: tepat satu berhasil, satunya `booking-conflict`. Masuk `make check` selamanya | done | Claude |
 | S1-024 | `booking_counters` + kode `<prefix>-nnnn` | BE | 022 | Unik per owner; menghapus booking tidak pernah mendaur ulang nomor; prefix dibaca dari `owners.booking_code_prefix` **saat kode dibuat** — mengubahnya tidak menyentuh kode lama dan tidak me-reset pencacah (BR-024) | done | Claude |
@@ -359,13 +359,41 @@ Alur yang dipakai sambil berdiri di parkiran. PRD §10: **< 3 menit**.
 
 | ID | Item | Repo | Depends | Acceptance | Status | Owner |
 |---|---|---|---|---|---|---|
-| S1-033 | Adapter object storage S3-compatible | BE | 001 | **Diuji seluruhnya terhadap MinIO lokal — nol akun luar dibutuhkan.** **Presign PUT (10 menit, `Content-Type` + `Content-Length` diikat pada tanda tangan) dan `HEAD` untuk verifikasi sebelum commit** (BR-093) — bukan cuma presign GET; **CORS MinIO lokal dikonfigurasi** supaya `PUT` dari browser benar-benar bisa diuji, bukan ditemukan rusak saat deploy; objek tidak bisa dibaca tanpa URL bertanda tangan; TTL: **foto serah-terima 1 jam, berkas ekspor 15 menit (BR-077), foto identitas 5 menit (BR-085)**; kunci berprefiks `owner_id` sehingga satu kunci bocor tidak membuka milik pemilik lain; adapter yang sama dipakai R2 di produksi (`S1-074`) | wip | Claude |
-| S1-034 | `handovers` + `handover_photos`, append-only | BE | 022, 033 | Satu baris per arah per booking, dan transisi `reserved→picked_up` / `picked_up→returned` wajib membuatnya (BR-035); tidak ada query `UPDATE`/`DELETE` di `db/queries/`; `PATCH`/`DELETE` → `405 evidence-immutable` (BR-037) | wip | Claude |
-| S1-035 | `POST /bookings/{id}/pickup` | BE | 012, 034 | Menerima `photo_keys[]`, **bukan** `multipart` — tiap kunci di-`HEAD` dan disalin dari `pending/` ke prefiks final dalam transaksi yang sama (BR-093); kunci karangan atau milik pemilik lain → `422 upload-not-found`; tanpa kunci → `422`; resource bermeter tanpa odometer → `422`; flag bayar-dulu aktif & belum lunas → `409`; unit belum balik → `409` sampai `confirm_physical_conflict` (BR-036, BR-038, BR-042) | wip | Claude |
-| S1-036 | `return-preview` + `POST /return` | BE | 012, 035 | `photo_keys[]` diverifikasi `HEAD` seperti `S1-035` (BR-093); `actual_return_at` dari jam server, bukan body; denda = `ceil(kelebihan / pricing_unit) × late_fee_per_unit` dari snapshot; pembebasan tercatat beserta alasan (BR-040, BR-046) ; `proposed_lines` adalah **usulan** — baris yang tidak ada di `confirmed_lines[]` tidak terbit sama sekali; resource tanpa tarif denda tidak mengusulkan `late_fee` tapi `overdue_units` tetap dihitung; `Idempotency-Key` wajib (BR-016, BR-051, BR-090) | wip | Claude |
-| S1-037 | Alur serah-terima ambil & kembali, mobile-first | FE | 035, 036 | Bisa diselesaikan satu tangan di HP; kamera terbuka langsung dari alur; **unggah langsung ke R2** lewat presign, byte tidak lewat API (BR-093); foto 5MB menampilkan progres nyata dari `PUT`-nya dan **tidak pernah** memblokir form; syarat foto minimal 1 terlihat sejak awal (BR-036) | wip | Claude |
-| S1-038 | Pratinjau denda telat + jalur pembebasan | FE | 036 | Denda tampil sebelum dikonfirmasi; tombol bebaskan sebagian/seluruhnya terlihat, dengan field alasan wajib (BR-046) ; daftar centang memuat denda **dan** kerusakan, sisa deposit dihitung ulang tiap centang berubah; menghapus centang tanpa alasan → form ditolak (BR-051) | wip | Claude |
-| S1-039 | Galeri bukti kondisi, hanya-baca | FE | 034 | Tidak ada tombol hapus atau ganti pada foto handover, termasuk untuk `owner` (BR-037) | wip | Claude |
+| S1-033 | Adapter object storage S3-compatible | BE | 001 | **Diuji seluruhnya terhadap MinIO lokal — nol akun luar dibutuhkan.** **Presign PUT (10 menit, `Content-Type` + `Content-Length` diikat pada tanda tangan) dan `HEAD` untuk verifikasi sebelum commit** (BR-093) — bukan cuma presign GET; **CORS MinIO lokal dikonfigurasi** supaya `PUT` dari browser benar-benar bisa diuji, bukan ditemukan rusak saat deploy; objek tidak bisa dibaca tanpa URL bertanda tangan; TTL: **foto serah-terima 1 jam, berkas ekspor 15 menit (BR-077), foto identitas 5 menit (BR-085)**; kunci berprefiks `owner_id` sehingga satu kunci bocor tidak membuka milik pemilik lain; adapter yang sama dipakai R2 di produksi (`S1-074`) | done | Claude |
+| S1-034 | `handovers` + `handover_photos`, append-only | BE | 022, 033 | Satu baris per arah per booking, dan transisi `reserved→picked_up` / `picked_up→returned` wajib membuatnya (BR-035); tidak ada query `UPDATE`/`DELETE` di `db/queries/`; `PATCH`/`DELETE` → `405 evidence-immutable` (BR-037) | done | Claude |
+| S1-035 | `POST /bookings/{id}/pickup` | BE | 012, 034 | Menerima `photo_keys[]`, **bukan** `multipart` — tiap kunci di-`HEAD` dan disalin dari `pending/` ke prefiks final dalam transaksi yang sama (BR-093); kunci karangan atau milik pemilik lain → `422 upload-not-found`; tanpa kunci → `422`; resource bermeter tanpa odometer → `422`; flag bayar-dulu aktif & belum lunas → `409`; unit belum balik → `409` sampai `confirm_physical_conflict` (BR-036, BR-038, BR-042) | done | Claude |
+| S1-036 | `return-preview` + `POST /return` | BE | 012, 035 | `photo_keys[]` diverifikasi `HEAD` seperti `S1-035` (BR-093); `actual_return_at` dari jam server, bukan body; denda = `ceil(kelebihan / pricing_unit) × late_fee_per_unit` dari snapshot; pembebasan tercatat beserta alasan (BR-040, BR-046) ; `proposed_lines` adalah **usulan** — baris yang tidak ada di `confirmed_lines[]` tidak terbit sama sekali; resource tanpa tarif denda tidak mengusulkan `late_fee` tapi `overdue_units` tetap dihitung; `Idempotency-Key` wajib (BR-016, BR-051, BR-090) | done | Claude |
+| S1-037 | Alur serah-terima ambil & kembali, mobile-first | FE | 035, 036 | Bisa diselesaikan satu tangan di HP; kamera terbuka langsung dari alur; **unggah langsung ke R2** lewat presign, byte tidak lewat API (BR-093); foto 5MB menampilkan progres nyata dari `PUT`-nya dan **tidak pernah** memblokir form; syarat foto minimal 1 terlihat sejak awal (BR-036) | done | Claude |
+| S1-038 | Pratinjau denda telat + jalur pembebasan | FE | 036 | Denda tampil sebelum dikonfirmasi; tombol bebaskan sebagian/seluruhnya terlihat, dengan field alasan wajib (BR-046) ; daftar centang memuat denda **dan** kerusakan, sisa deposit dihitung ulang tiap centang berubah; menghapus centang tanpa alasan → form ditolak (BR-051) | done | Claude |
+| S1-039 | Galeri bukti kondisi, hanya-baca | FE | 034 | Tidak ada tombol hapus atau ganti pada foto handover, termasuk untuk `owner` (BR-037) | done | Claude |
+
+> **M3 tuntas — dan `S1-021` ikut tertutup.** Dua item ditarik maju dari M4, keduanya sadar:
+> **`S1-041`** (invoice + baris) supaya `return` menerbitkan baris sungguhan dan bayar-dulu
+> (BR-038) membaca status invoice sungguhan, bukan bendera palsu; **`S1-043`** ikut karena M3
+> sudah menerbitkan baris `damage`, dan constraint fotonya tidak boleh menyusul belakangan.
+> M4 karena itu tinggal pembayaran, deposit, dan ekspor.
+>
+> **Empat celah kontrak yang diputuskan:**
+>
+> | Celah | Keputusan |
+> |---|---|
+> | "Bermeter" tidak didefinisikan di mana pun (catatan M1 menyerahkannya ke `S1-035`) | Resource punya spek kendaraan (BR-094). Tanpa kolom baru |
+> | `damages[].handover_photo_id` menunjuk foto yang baru lahir di request yang sama | `photo_key`, salah satu `photo_keys` request itu; server yang menerjemahkan |
+> | Pembebasan **penuh** tidak punya baris invoice untuk menampung alasannya | Jumlah + alasan di baris handover kembali (`handovers_waiver_complete`) |
+> | Baris dari return masuk invoice yang mana | Satu invoice baru per return, `<kode>/<n>` |
+>
+> **Penegakan oleh database, bukan disiplin:** `handovers`/`handover_photos` kehilangan
+> `UPDATE`/`DELETE` untuk `app_user`, seperti `audit_logs`. `PATCH`/`DELETE /handovers/{id}`
+> terdaftar justru supaya jawabannya `405 evidence-immutable`, bukan `404`. Harness tumbuh
+> **66 → 79 kasus**.
+>
+> **Object storage diuji terhadap MinIO sungguhan, termasuk dari browser:** tanda tangan
+> presign menolak `Content-Type` atau `Content-Length` lain di tingkat storage; dua foto di-`PUT`
+> langsung dari browser (390×844) saat uji ambil/kembali — CORS lokal terbukti, bukan diasumsikan.
+> `/healthz` kini `HeadBucket` bertanda tangan, jalan juga di R2. **CORS R2 masuk daftar `S1-074`.**
+>
+> **Yang belum diukur:** target < 3 menit di HP mid-range jaringan seluler (PRD §10) adalah
+> `S1-072`, bukan emulator.
 
 ---
 
@@ -377,9 +405,9 @@ tanpa runner-nya masing-masing akan menumbuhkan `time.Ticker` sendiri.
 | ID | Item | Repo | Depends | Acceptance | Status | Owner |
 |---|---|---|---|---|---|---|
 | S1-040 | **Job runner**: `cmd/worker` (Redis Streams) + `cmd/scheduler` | BE | 001, 004 | Satu pekerjaan gagal di-retry dengan backoff lalu masuk dead-letter, bukan hilang; job berjadwal tidak pernah jalan dobel walau ada 2 replika; **dipakai apa adanya oleh S1-046, S1-052, S1-054, S1-057** tanpa diubah (BR-091) | todo | |
-| S1-041 | `invoices` + `invoice_lines` | BE | 012, 026 | `total` selalu `SUM(lines)`, tidak ada kolom total; `discount` negatif, sisanya positif (BR-055); status salah satu dari lima nilai BR-056 — `gateway_pending` tak terjangkau di fase 1; invoice pertama memuat baris `rent` **dan** `deposit` (BR-045); **`due_at` diisi server saat terbit** = `min(created_at + payment_due_hours, booking.start_at)` — tidak pernah dari klien, tidak pernah kosong (BR-057) | wip | Claude |
+| S1-041 | `invoices` + `invoice_lines` | BE | 012, 026 | `total` selalu `SUM(lines)`, tidak ada kolom total; `discount` negatif, sisanya positif (BR-055); status salah satu dari lima nilai BR-056 — `gateway_pending` tak terjangkau di fase 1; invoice pertama memuat baris `rent` **dan** `deposit` (BR-045); **`due_at` diisi server saat terbit** = `min(created_at + payment_due_hours, booking.start_at)` — tidak pernah dari klien, tidak pernah kosong (BR-057) | done | Claude |
 | S1-042 | Penyelesaian deposit | BE | 012, 036, 041 | Sisa < 0 menerbitkan invoice baru sebesar selisih; deposit tidak pernah negatif; `completed` diblokir sebelum diselesaikan (BR-048, BR-049) ; `POST /bookings/{id}/deposit/waive` 🔒 owner mencabut baris `deposit` selama invoice belum lunas, sesudah lunas → `409 deposit-already-paid`; booking tanpa deposit **tidak** memblokir `completed` (BR-016, BR-051) | todo | |
-| S1-043 | Baris `damage` merujuk foto pengembalian | BE | 034, 042 | Baris `damage` tanpa `handover_photo_id` ditolak database, bukan hanya aplikasi (BR-047) | wip | Claude |
+| S1-043 | Baris `damage` merujuk foto pengembalian | BE | 034, 042 | Baris `damage` tanpa `handover_photo_id` ditolak database, bukan hanya aplikasi (BR-047) | done | Claude |
 | S1-044 | Pembayaran manual & tunai | BE | 012, 041 | Pembayaran sukses kedua atas satu invoice → `409 invoice-already-paid` (BR-060) | todo | |
 | S1-045 | ~~Gateway + webhook idempoten~~ → fase 2 | BE | 044 | **Jalur gateway nonaktif di fase 1** — pembayaran manual saja (`04-api-spec.md` §3.8.1, BR-061). Kontrak BR-063/BR-064 ditinggal utuh untuk fase 2 | dropped | |
 | S1-046 | Bukti transfer + pembacaan AI asinkron | BE | 033, 040, 044 | Bukti diunggah langsung ke R2, API menerima `object_key` lalu `HEAD` (BR-093) → `202`; hasil AI hanya rekomendasi; lunas butuh persetujuan manusia (BR-062) | todo | |
