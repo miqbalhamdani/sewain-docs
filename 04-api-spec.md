@@ -657,8 +657,9 @@ enkripsi aplikasi: URL bertanda tangan harus bisa dirender langsung oleh browser
 | `POST` | `/bookings/{id}/confirm` | semua | BR-026, BR-022 |
 | `POST` | `/bookings/{id}/cancel` | semua | BR-023 |
 
-`GET /bookings` menerima `?status=`, `?from=`, `?to=`, `?unit_id=`, dan
-`?overdue=true` (kondisi turunan, bukan status — BR-041).
+`GET /bookings` menerima `?status=`, `?from=`, `?to=`, `?unit_id=`, `?customer_id=`, dan
+`?resource_id=` (ketiganya boleh diulang), `?code=` (potongan teks, tanpa membedakan huruf
+besar-kecil), dan `?overdue=true` (kondisi turunan, bukan status — BR-041).
 
 `POST /bookings` (staff → langsung `reserved`):
 
@@ -691,7 +692,8 @@ menerima `resource_unit_id`; mengubah tanggal adalah batal lalu buat ulang.
 tepat saat status `cancelled` (`bookings_cancelled_reason_valid`).
 
 `GET /bookings` dan `GET /customers` berbentuk `{ "data": [...], "next_cursor": "…" }`.
-`GET /customers?q=` mencocokkan nama atau telepon.
+`GET /customers?q=` mencocokkan nama atau telepon; `?blacklisted=true|false` menyaring status blokir
+(tanpa parameter: keduanya).
 
 `POST /bookings/{id}/confirm` menjalankan **ulang** cek bentrok saat itu juga —
 draft tidak pernah menahan unit, jadi konfirmasi bisa gagal dan itu benar (BR-026).

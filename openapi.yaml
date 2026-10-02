@@ -730,7 +730,8 @@ paths:
       description: |
         Semua peran (`customers:read`). Urut terbaru dulu, paginasi cursor.
         `q` mencocokkan nama atau telepon — yang dipakai form booking untuk memilih
-        penyewa sambil mengetik.
+        penyewa sambil mengetik. `blacklisted=true` hanya yang diblokir, `false` hanya
+        yang tidak; tanpa parameter, keduanya.
       parameters:
         - name: q
           in: query
@@ -738,6 +739,11 @@ paths:
           schema:
             type: string
             minLength: 1
+        - name: blacklisted
+          in: query
+          required: false
+          schema:
+            type: boolean
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
       responses:
@@ -1006,6 +1012,11 @@ paths:
         `from`/`to` menyaring booking yang **beririsan** dengan rentang itu, bukan yang
         mulai di dalamnya. `overdue=true` adalah kondisi turunan — `picked_up` dan
         `end_at < now()` — bukan status (BR-041); ia tidak ada di enum `status`.
+
+        `unit_id`, `customer_id`, dan `resource_id` boleh diulang
+        (`?customer_id=a&customer_id=b`) dan berarti "salah satu dari ini". `code`
+        mencocokkan **potongan teks** tanpa membedakan huruf besar-kecil; tidak ada karakter
+        wildcard — `%` dan `_` dicari apa adanya.
       parameters:
         - name: status
           in: query
@@ -1027,15 +1038,42 @@ paths:
         - name: unit_id
           in: query
           required: false
+          style: form
+          explode: true
           schema:
-            type: string
-            format: uuid
+            type: array
+            maxItems: 50
+            items:
+              type: string
+              format: uuid
         - name: customer_id
+          in: query
+          required: false
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 50
+            items:
+              type: string
+              format: uuid
+        - name: resource_id
+          in: query
+          required: false
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 50
+            items:
+              type: string
+              format: uuid
+        - name: code
           in: query
           required: false
           schema:
             type: string
-            format: uuid
+            maxLength: 32
         - name: overdue
           in: query
           required: false
