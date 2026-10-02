@@ -1003,6 +1003,13 @@ ALTER TABLE payment_proofs
   ADD CONSTRAINT payment_proofs_invoice_matches_owner
     FOREIGN KEY (invoice_id, owner_id) REFERENCES invoices (id, owner_id);
 
+-- Bukti yang disetujui menunjuk pembayarannya sendiri, milik usaha yang sama.
+-- Target UNIQUE (id, owner_id) seperti setiap FK komposit lain; diuji lewat
+-- test Go (approve), bukan harness -- harness tidak punya baris pembayaran sah.
+ALTER TABLE payments ADD CONSTRAINT payments_id_owner_uq UNIQUE (id, owner_id);
+ALTER TABLE payment_proofs ADD CONSTRAINT payment_proofs_payment_matches_owner
+  FOREIGN KEY (payment_id, owner_id) REFERENCES payments (id, owner_id);
+
 SELECT enable_owner_rls('payments');
 SELECT enable_owner_rls('payment_proofs');
 ```
