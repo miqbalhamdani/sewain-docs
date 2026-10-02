@@ -206,6 +206,8 @@ erDiagram
         bigint meter_value "BR-036"
         jsonb checklist
         text condition_notes
+        bigint late_fee_waived "BR-051, hanya arah return"
+        text waiver_reason "BR-051, berpasangan dengan late_fee_waived"
     }
 
     handover_photos {
@@ -223,7 +225,7 @@ erDiagram
         uuid booking_id FK "null untuk langganan"
         uuid subscription_id FK "null untuk sewa"
         uuid customer_id FK
-        text number UK
+        text number "UK per owner: <kode booking>/<n>"
         text status "unpaid|gateway_pending|paid|overdue|cancelled (BR-056); gateway_pending tak terjangkau di fase 1"
         timestamptz due_at "BR-057: min(created_at + payment_due_hours, booking.start_at)"
         timestamptz paid_at
@@ -345,8 +347,8 @@ createdb sewain_scratch && psql sewain_scratch -f docs/03-verify-overlap-constra
 ```
 
 **Constraint sisanya punya skripnya sendiri:** `docs/03-verify-constraints.sql` — pola
-sama: **66 `NOTICE OK` constraint plus 6 `NOTICE OK RLS`** yang membuktikan isolasi BR-001.
-Kasusnya 66 untuk 64 constraint karena beberapa diuji dari dua arah — menolak yang salah **dan**
+sama: **76 `NOTICE OK` constraint plus 6 `NOTICE OK RLS`** yang membuktikan isolasi BR-001.
+Kasusnya 76 untuk 78 constraint: beberapa diuji dari dua arah, dan empat target `UNIQUE (id, owner_id)` diuji lewat FK yang menunjuknya — menolak yang salah **dan**
 menerima yang benar, supaya constraint yang kebablasan ikut ketahuan.
 Yang RLS diuji dari **peran non-superuser**: superuser melewati RLS sepenuhnya, `FORCE`
 sekalipun, jadi mengujinya sebagai diri sendiri akan lulus secara palsu. Tabel di dalamnya sengaja minimal (hanya kolom yang
@@ -892,6 +894,57 @@ ALTER TABLE notifications ADD CONSTRAINT notifications_max_attempts
 -- BR-082: invoice melayani dua subjek, tepat satu terisi.
 ALTER TABLE invoices ADD CONSTRAINT invoices_one_subject
   CHECK (num_nonnulls(booking_id, subscription_id) = 1);
+
+-- ── M3 · serah-terima dan invoice (S1-034, S1-041, S1-043) ──
+
+-- BR-035 + BR-037: arah tertutup, dan bukti kondisi APPEND-ONLY ditegakkan
+-- database: app_user kehilangan UPDATE dan DELETE pada kedua tabel, pola yang
+-- sama dengan audit_logs. "Tidak ada query UPDATE di db/queries/" adalah disiplin;
+-- REVOKE adalah penolakan.
+ALTER TABLE handovers ADD CONSTRAINT handovers_direction_valid
+  CHECK (direction IN ('pickup', 'return'));
+
+-- BR-001: cek FK melewati RLS -- pasangkan owner_id di setiap rantai bukti:
+-- handover -> booking, foto -> handover, baris damage -> foto.
+ALTER TABLE bookings  ADD CONSTRAINT bookings_id_owner_uq  UNIQUE (id, owner_id);
+ALTER TABLE handovers ADD CONSTRAINT handovers_id_owner_uq UNIQUE (id, owner_id);
+ALTER TABLE handovers ADD CONSTRAINT handovers_booking_matches_owner
+  FOREIGN KEY (booking_id, owner_id) REFERENCES bookings (id, owner_id);
+ALTER TABLE handover_photos ADD CONSTRAINT handover_photos_id_owner_uq UNIQUE (id, owner_id);
+ALTER TABLE handover_photos ADD CONSTRAINT handover_photos_handover_matches_owner
+  FOREIGN KEY (handover_id, owner_id) REFERENCES handovers (id, owner_id);
+
+-- BR-051: pembebasan denda tercatat di baris handover kembali -- pembebasan
+-- PENUH tidak punya baris invoice untuk menampung alasannya. Jumlah dan alasan
+-- terisi bersama; pelaku dan waktunya adalah performed_by/performed_at.
+ALTER TABLE handovers ADD CONSTRAINT handovers_waiver_complete
+  CHECK (num_nonnulls(late_fee_waived, waiver_reason) IN (0, 2)
+         AND (late_fee_waived IS NULL OR (direction = 'return' AND late_fee_waived >= 0)));
+
+SELECT enable_owner_rls('handovers');
+REVOKE UPDATE, DELETE ON handovers, handover_photos FROM app_user;
+
+-- BR-056 + BR-055: status dan jenis baris tertutup.
+ALTER TABLE invoices ADD CONSTRAINT invoices_status_valid
+  CHECK (status IN ('unpaid', 'gateway_pending', 'paid', 'overdue', 'cancelled'));
+ALTER TABLE invoice_lines ADD CONSTRAINT invoice_lines_kind_valid
+  CHECK (kind IN ('rent', 'deposit', 'late_fee', 'damage', 'discount'));
+
+-- Nomor invoice: "<kode booking>/<n>", unik per pemilik -- dua pemilik boleh
+-- sama-sama punya RB-0001/1, sama seperti kode booking (BR-024).
+CREATE UNIQUE INDEX invoices_number_per_owner ON invoices (owner_id, number);
+
+ALTER TABLE invoices ADD CONSTRAINT invoices_id_owner_uq UNIQUE (id, owner_id);
+ALTER TABLE invoices ADD CONSTRAINT invoices_booking_matches_owner
+  FOREIGN KEY (booking_id, owner_id) REFERENCES bookings (id, owner_id);
+ALTER TABLE invoice_lines ADD CONSTRAINT invoice_lines_invoice_matches_owner
+  FOREIGN KEY (invoice_id, owner_id) REFERENCES invoices (id, owner_id);
+-- BR-047 + BR-001: baris damage pemilik A tidak bisa menunjuk foto pemilik B.
+ALTER TABLE invoice_lines ADD CONSTRAINT invoice_lines_photo_matches_owner
+  FOREIGN KEY (handover_photo_id, owner_id) REFERENCES handover_photos (id, owner_id);
+
+SELECT enable_owner_rls('invoices');
+SELECT enable_owner_rls('invoice_lines');
 ```
 
 **Index untuk kecepatan** (PRD §9: < 1 detik untuk 500 unit × 12 bulan):

@@ -19,7 +19,9 @@ info:
     `/auth/verify-email`, `/auth/verify-email/resend`, `/auth/accept-invitation`,
     dan `S1-016`/`S1-017` `/resources`, `/resources/{id}`, `/resources/{id}/units`,
     `/units/{id}`. M2: `S1-020` `/customers*`, `S1-025` `/availability`, `S1-026`/`S1-027`
-    `/bookings*`, `S1-078` `/calendar`. `/customers/{id}/identity` menunggu `S1-033`.
+    `/bookings*`, `S1-078` `/calendar`. M3: `S1-033` `/uploads/presign`, `S1-021`
+    `/customers/{id}/identity`, `S1-034`..`S1-036` serah-terima, dan `S1-041` (ditarik
+    dari M4) `/invoices` per booking.
 
     Jadi berkas ini **kurang** dibanding `04-api-spec.md` §3–§8, bukan **bertentangan**
     dengannya. Aturan di `CLAUDE.md` tetap berlaku untuk apa pun yang dijelaskan dua-duanya:
@@ -1270,6 +1272,357 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
 
+  /uploads/presign:
+    post:
+      operationId: presignUpload
+      summary: Minta URL unggah langsung ke object storage
+      description: |
+        Semua peran. Byte tidak pernah lewat API (BR-093): klien `PUT` langsung ke
+        `upload_url`, lalu menyerahkan `object_key` ke endpoint domainnya —
+        `/bookings/{id}/pickup`, `/bookings/{id}/return`, `/customers/{id}/identity`.
+
+        **Server yang menentukan kunci**, selalu `pending/<owner_id>/<uuid>`.
+        `Content-Type` dan `Content-Length` diikat pada tanda tangan, jadi storage
+        sendiri yang menolak berkas lain. URL hidup 10 menit. Objek yang tidak pernah
+        di-commit hilang dalam 24 jam lewat lifecycle rule.
+
+        `payment_proof` menyusul bersama `S1-046`. Rate limit 60/menit per pengguna.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresignRequest"
+      responses:
+        "201":
+          description: URL unggah dan kuncinya.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresignedUpload"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /customers/{id}/identity:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    post:
+      operationId: setCustomerIdentityPhoto
+      summary: Simpan foto identitas penyewa
+      description: |
+        Semua peran (`customers:write`). `object_key` dari `/uploads/presign` dengan
+        `kind: identity_photo`; server mem-`HEAD` lalu menyalinnya ke
+        `identity/<owner_id>/<customer_id>/…` sebelum menyimpan kuncinya (BR-093).
+        Foto lama diganti — identitas bukan bukti serah-terima.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IdentityPhotoInput"
+      responses:
+        "200":
+          description: Penyewa sesudah fotonya tersimpan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+    get:
+      operationId: viewCustomerIdentityPhoto
+      summary: Buka foto identitas (tercatat di audit log)
+      description: |
+        Semua peran (`customers:read`). URL bertanda tangan berumur **5 menit**, dan
+        **setiap panggilan menulis satu baris `audit_logs` dalam transaksi yang sama**
+        (BR-085). Tanpa foto → `404`.
+      responses:
+        "200":
+          description: URL baca sementara.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignedURL"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /bookings/{id}/pickup:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    post:
+      operationId: pickupBooking
+      summary: Serah-terima ambil
+      description: |
+        Semua peran (`handovers:write`). Dari `reserved` — atau `no_show`, yang tidak
+        pernah ditolak langsung (BR-057) — ke `picked_up`, dan satu baris `handovers`
+        arah `pickup` terbit dalam transaksi yang sama (BR-035).
+
+        - `photo_keys` kosong → `422 handover-photo-required`; kunci yang `HEAD`-nya
+          gagal atau bukan milik usaha ini → `422 upload-not-found` /
+          `upload-type-mismatch` (BR-036, BR-093)
+        - resource kendaraan tanpa `meter_value` → `422 meter-value-required`. "Bermeter"
+          = resource punya spek kendaraan (BR-094)
+        - `require_payment_before_pickup` menyala dan invoice sewa belum lunas →
+          `409 payment-required-before-pickup` (BR-038)
+        - unit masih dibawa booking sebelumnya yang sudah lewat `end_at` →
+          `409 physical-conflict-unconfirmed` beserta `conflicts[]`, sampai dikirim ulang
+          dengan `confirm_physical_conflict: true` (BR-042)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PickupRequest"
+      responses:
+        "200":
+          description: Booking sesudah diambil.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /bookings/{id}/return-preview:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      operationId: previewReturn
+      summary: Pratinjau denda telat
+      description: |
+        Semua peran (`handovers:read`). Dihitung saat ini, tidak menyimpan apa pun.
+        `overdue_units = ceil((sekarang − end_at) / satuan harga)`, denda dari snapshot
+        booking (BR-046). Resource tanpa tarif denda tidak mengusulkan baris, tapi
+        `overdue_units` tetap dihitung (BR-016, BR-041). Hanya untuk booking `picked_up`.
+      responses:
+        "200":
+          description: Usulan, bukan keputusan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReturnPreview"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /bookings/{id}/return:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    post:
+      operationId: returnBooking
+      summary: Serah-terima kembali
+      description: |
+        Semua peran (`handovers:write`). `picked_up` → `returned`, satu baris
+        `handovers` arah `return`, `actual_return_at` dari jam server (BR-035, BR-040).
+
+        Keputusan operator, bukan salinan preview (BR-051):
+        - `confirm_late_fee: true` menerbitkan baris `late_fee` sebesar denda
+          dikurangi `late_fee_waived`. Denda yang tidak dikonfirmasi tidak terbit.
+        - Pembebasan apa pun — sebagian, seluruhnya, atau tidak mengonfirmasi denda
+          yang diusulkan — wajib `waiver_reason` → `422 waiver-reason-required`.
+          Alasan dan jumlahnya tercatat di baris handover, karena pembebasan penuh
+          tidak punya baris invoice untuk menampungnya.
+        - Tiap `damages[]` menunjuk **salah satu `photo_keys` di request ini** — foto
+          pengembalian belum punya id saat request dikirim (BR-047).
+
+        Baris yang terbit masuk **satu invoice baru** milik booking ini. Penyelesaian
+        deposit adalah langkah terpisah (`S1-042`).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReturnRequest"
+      responses:
+        "200":
+          description: Booking sesudah dikembalikan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /bookings/{id}/handovers:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      operationId: listHandovers
+      summary: Bukti kondisi satu booking
+      description: |
+        Semua peran (`handovers:read`). Hanya-baca untuk siapa pun, termasuk `owner`
+        (BR-037). URL foto bertanda tangan berumur 1 jam.
+      responses:
+        "200":
+          description: Serah-terima booking ini, ambil lalu kembali.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Handover"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /handovers/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    patch:
+      operationId: patchHandover
+      summary: Tidak ada — bukti kondisi tidak bisa diubah
+      description: |
+        Selalu `405 evidence-immutable` (BR-037). Path ini terdaftar justru supaya
+        jawabannya tetap itu, bukan `404` yang menyiratkan barisnya tidak ada.
+        Koreksi = baris catatan baru, bukan mengubah yang lama.
+      responses:
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+    delete:
+      operationId: deleteHandover
+      summary: Tidak ada — bukti kondisi tidak bisa dihapus
+      description: Selalu `405 evidence-immutable` (BR-037), termasuk untuk `owner`.
+      responses:
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /invoices:
+    get:
+      operationId: listInvoices
+      summary: Invoice satu booking
+      description: |
+        Semua peran (`invoices:read`), **wajib `booking_id`** — daftar penuh lintas
+        booking adalah milik owner dan menyusul di M4 (BR-003). Total selalu
+        `SUM(lines)`, dihitung saat dibaca (BR-055).
+      parameters:
+        - name: booking_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Invoice booking itu, terlama dulu.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Invoice"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /invoices/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      operationId: getInvoice
+      summary: Satu invoice beserta barisnya
+      responses:
+        "200":
+          description: Invoice itu.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 
 components:
 
@@ -2374,8 +2727,12 @@ components:
       required: [id, code, status, source, customer, resource, unit, start_at, end_at,
                  end_at_with_buffer, overdue, unit_price, pricing_unit, buffer_minutes,
                  duration_qty, subtotal, deposit_amount, late_fee_per_unit,
-                 cancelled_reason, expires_at, created_at]
+                 cancelled_reason, expires_at, created_at, actual_return_at]
       properties:
+        actual_return_at:
+          type: [string, "null"]
+          format: date-time
+          description: Diisi jam server saat serah-terima kembali (BR-040).
         id:
           type: string
           format: uuid
@@ -2591,6 +2948,280 @@ components:
             customer_name:
               type: string
 
+    UploadKind:
+      type: string
+      enum: [handover_photo, identity_photo]
+
+    PresignRequest:
+      type: object
+      required: [kind, content_type, bytes]
+      properties:
+        kind:
+          $ref: "#/components/schemas/UploadKind"
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, image/webp]
+        bytes:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 10485760
+
+    PresignedUpload:
+      type: object
+      required: [object_key, upload_url, expires_in, headers]
+      properties:
+        object_key:
+          type: string
+          examples: ["pending/01926f3a-0000-7000-8000-000000000000/01926f3b-…"]
+        upload_url:
+          type: string
+        expires_in:
+          type: integer
+          examples: [600]
+        headers:
+          type: object
+          description: |
+            Header yang wajib ikut di `PUT` — persis yang diikat tanda tangannya.
+            Mengirim nilai lain membuat storage menolak unggahannya.
+          additionalProperties:
+            type: string
+
+    IdentityPhotoInput:
+      type: object
+      required: [object_key, id_type]
+      properties:
+        object_key:
+          type: string
+        id_type:
+          $ref: "#/components/schemas/IdType"
+
+    SignedURL:
+      type: object
+      required: [url, expires_in]
+      properties:
+        url:
+          type: string
+        expires_in:
+          type: integer
+
+    PickupRequest:
+      type: object
+      required: [photo_keys]
+      properties:
+        photo_keys:
+          type: array
+          items:
+            type: string
+        meter_value:
+          type: integer
+          format: int64
+          minimum: 0
+        checklist:
+          type: object
+          description: Butir periksa → nilai. Templatnya konstanta di klien per jenis barang.
+          additionalProperties: true
+        condition_notes:
+          type: string
+          maxLength: 1000
+        confirm_physical_conflict:
+          type: boolean
+
+    ReturnRequest:
+      type: object
+      required: [photo_keys]
+      properties:
+        photo_keys:
+          type: array
+          items:
+            type: string
+        meter_value:
+          type: integer
+          format: int64
+          minimum: 0
+        checklist:
+          type: object
+          additionalProperties: true
+        condition_notes:
+          type: string
+          maxLength: 1000
+        confirm_late_fee:
+          type: boolean
+          description: Terbitkan baris `late_fee` yang diusulkan preview.
+        late_fee_waived:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Bagian denda yang dibebaskan. Seluruhnya = tidak ada baris.
+        waiver_reason:
+          type: string
+          maxLength: 500
+        damages:
+          type: array
+          items:
+            $ref: "#/components/schemas/DamageInput"
+
+    DamageInput:
+      type: object
+      required: [amount, description, photo_key]
+      properties:
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+        description:
+          type: string
+          minLength: 1
+          maxLength: 300
+        photo_key:
+          type: string
+          description: Salah satu `photo_keys` di request yang sama (BR-047).
+
+    ReturnPreview:
+      type: object
+      required: [actual_return_at, end_at, overdue_units, pricing_unit, late_fee_per_unit,
+                 late_fee_total, deposit_amount, proposed_lines]
+      properties:
+        actual_return_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+        overdue_units:
+          type: integer
+        pricing_unit:
+          $ref: "#/components/schemas/PricingUnit"
+        late_fee_per_unit:
+          type: [integer, "null"]
+          format: int64
+        late_fee_total:
+          type: integer
+          format: int64
+        deposit_amount:
+          type: [integer, "null"]
+          format: int64
+        proposed_lines:
+          type: array
+          items:
+            type: object
+            required: [kind, amount, description]
+            properties:
+              kind:
+                type: string
+                enum: [late_fee]
+              amount:
+                type: integer
+                format: int64
+              description:
+                type: string
+
+    Handover:
+      type: object
+      required: [id, direction, performed_by, performed_at, meter_value, checklist,
+                 condition_notes, late_fee_waived, waiver_reason, photos]
+      properties:
+        id:
+          type: string
+          format: uuid
+        direction:
+          type: string
+          enum: [pickup, return]
+        performed_by:
+          type: string
+          description: Nama petugasnya.
+        performed_at:
+          type: string
+          format: date-time
+        meter_value:
+          type: [integer, "null"]
+          format: int64
+        checklist:
+          type: object
+          additionalProperties: true
+        condition_notes:
+          type: [string, "null"]
+        late_fee_waived:
+          type: [integer, "null"]
+          format: int64
+        waiver_reason:
+          type: [string, "null"]
+        photos:
+          type: array
+          items:
+            type: object
+            required: [id, url, captured_at]
+            properties:
+              id:
+                type: string
+                format: uuid
+              url:
+                type: string
+                description: Bertanda tangan, berumur 1 jam.
+              captured_at:
+                type: string
+                format: date-time
+
+    InvoiceStatus:
+      type: string
+      description: |
+        Lima nilai BR-056. `gateway_pending` tidak terjangkau di fase 1.
+      enum: [unpaid, gateway_pending, paid, overdue, cancelled]
+
+    Invoice:
+      type: object
+      required: [id, booking_id, number, status, due_at, paid_at, total, lines, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        booking_id:
+          type: string
+          format: uuid
+        number:
+          type: string
+          examples: ["SWN-0042/1"]
+        status:
+          $ref: "#/components/schemas/InvoiceStatus"
+        due_at:
+          type: string
+          format: date-time
+        paid_at:
+          type: [string, "null"]
+          format: date-time
+        total:
+          type: integer
+          format: int64
+          description: "`SUM(lines.amount)`, dihitung saat dibaca — tidak ada kolom total (BR-055)."
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/InvoiceLine"
+        created_at:
+          type: string
+          format: date-time
+
+    InvoiceLine:
+      type: object
+      required: [id, kind, description, amount, handover_photo_id, waiver_reason]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [rent, deposit, late_fee, damage, discount]
+        description:
+          type: string
+        amount:
+          type: integer
+          format: int64
+        handover_photo_id:
+          type: [string, "null"]
+          format: uuid
+        waiver_reason:
+          type: [string, "null"]
+
     ErrorCode:
       type: string
       description: |
@@ -2617,6 +3248,14 @@ components:
         - duration-out-of-range
         - customer-blacklisted
         - unit-not-swappable
+        - evidence-immutable
+        - upload-not-found
+        - upload-type-mismatch
+        - handover-photo-required
+        - meter-value-required
+        - payment-required-before-pickup
+        - physical-conflict-unconfirmed
+        - waiver-reason-required
 
     ProblemError:
       type: object
@@ -2668,8 +3307,9 @@ components:
         conflicts:
           type: array
           description: |
-            Hanya pada `booking-conflict`: booking yang mengunci unit itu pada rentang
-            yang diminta, supaya layar bisa menunjuknya alih-alih bilang "gagal" (BR-022).
+            Pada `booking-conflict`: booking yang mengunci unit itu pada rentang yang
+            diminta (BR-022). Pada `physical-conflict-unconfirmed`: booking sebelumnya
+            yang unitnya belum kembali (BR-042).
           items:
             $ref: "#/components/schemas/AffectedBooking"
 
@@ -2713,7 +3353,17 @@ components:
       description: |
         Bentrok dengan keadaan sekarang: `request-in-flight` ketika `Idempotency-Key`
         yang sama masih diproses (BR-090), `booking-conflict` beserta `conflicts[]`
-        (BR-022), atau `unit-not-swappable` (BR-029).
+        (BR-022), `unit-not-swappable` (BR-029), `payment-required-before-pickup`
+        (BR-038), atau `physical-conflict-unconfirmed` beserta `conflicts[]` (BR-042).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+    MethodNotAllowed:
+      description: |
+        `evidence-immutable`: bukti kondisi tidak pernah diubah atau dihapus, oleh siapa
+        pun (BR-037).
       content:
         application/problem+json:
           schema:

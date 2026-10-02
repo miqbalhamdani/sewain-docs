@@ -136,7 +136,8 @@ POST /api/v1/bookings/{id}/pickup
 
 | Hal | Ketentuan |
 |---|---|
-| `kind` | `handover_photo` · `identity_photo` · `payment_proof` |
+| `kind` | `handover_photo` · `identity_photo` · `payment_proof` (yang terakhir menyusul bersama `S1-046`) |
+| Prefiks kunci | `pending/<owner_id>/<uuid>` saat diunggah; sesudah commit `handovers/<owner_id>/<booking_id>/<uuid>` atau `identity/<owner_id>/<customer_id>/<uuid>` |
 | `object_key` | **Server yang menentukan.** Klien tidak pernah mengusulkannya |
 | TTL `upload_url` | **10 menit.** Foto 5 MB di jaringan seluler yang jelek bisa lewat 5 menit, dan presign yang mati di tengah unggahan mengenai persis alur serah-terima di parkiran |
 | Batas | `Content-Type` dan `Content-Length` **diikat pada tanda tangan** — ditegakkan R2, bukan cuma divalidasi aplikasi. Maksimum 10 MB per objek |
@@ -736,16 +737,32 @@ tidak ada baris `late_fee` yang diusulkan; `overdue_units` **tetap dihitung**,
 karena kondisi terlambatnya tetap berlaku (BR-041).
 
 `POST …/return` menerima hasil keputusan operator, bukan sekadar menyalin preview:
-`photo_keys[]` (≥ 1, lewat §2.2), `meter_value`, `confirmed_lines[]`, `late_fee_waived` (bigint),
-`waiver_reason` (wajib bila ada pembebasan), dan `damages[]` — tiap elemen
-`{ amount, description, handover_photo_id }`. `actual_return_at` diisi jam server,
-bukan dari body (BR-040).
+`photo_keys[]` (≥ 1, lewat §2.2), `meter_value`, `confirm_late_fee` (bool), `late_fee_waived`
+(bigint), `waiver_reason` (wajib bila ada pembebasan), dan `damages[]` — tiap elemen
+`{ amount, description, photo_key }`. `actual_return_at` diisi jam server, bukan dari body
+(BR-040).
+
+**Tiga koreksi atas versi lama paragraf ini (M3):**
+
+- `damages[]` menunjuk **`photo_key`** — salah satu `photo_keys` di request yang sama —
+  bukan `handover_photo_id`. Foto pengembalian baru punya id di transaksi request ini
+  sendiri, jadi klien mustahil mengirim id-nya. Server yang menerjemahkan kunci ke id
+  sebelum baris `damage` ditulis (BR-047).
+- `confirmed_lines[]` jadi `confirm_late_fee`: satu-satunya baris yang diusulkan preview
+  adalah `late_fee`, dan daftar berisi satu jenis adalah boolean yang menyamar.
+- Baris yang terbit masuk **satu invoice baru** milik booking ini (nomor `<kode>/<n>`,
+  tenggat `created_at + payment_due_hours`). Pembebasan — jumlah dan alasannya — tercatat
+  di **baris handover kembali**, karena pembebasan penuh tidak punya baris invoice untuk
+  menampung alasannya; pelaku dan waktunya adalah `performed_by`/`performed_at` (BR-051).
+
+"Bermeter" (`meter_value` wajib) = **resource punya spek kendaraan** (BR-094). Diputuskan
+di `S1-035`, seperti catatan M1 menyerahkannya — tanpa kolom `is_metered` baru.
 
 | Aturan | Akibat |
 |---|---|
 | Baris `late_fee` yang tidak ada di `confirmed_lines[]` | tidak terbit |
 | Pembebasan tanpa `waiver_reason` | `422 waiver-reason-required` |
-| `damages[]` tanpa `handover_photo_id` | `422` — ditolak database juga (BR-047) |
+| `damages[]` yang `photo_key`-nya bukan foto request ini | `422` — baris `damage` tanpa foto juga ditolak database (BR-047) |
 | `Idempotency-Key` | **wajib** — `damages[]` satu-satunya jalur uang tanpa constraint (BR-090) |
 
 Denda yang tidak bisa dibebaskan membuat operator berhenti mencatat waktu kembali
