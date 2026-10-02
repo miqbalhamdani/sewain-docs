@@ -490,6 +490,7 @@ DECLARE
   hp_id  uuid := gen_random_uuid();
   inv_id uuid := gen_random_uuid();
   inv2_id uuid := gen_random_uuid();
+  b77    uuid := gen_random_uuid();
   n  int  := 0;
 BEGIN
   INSERT INTO owners (id, slug) VALUES (o1, 'rentalbudi'), (o2, 'rentalsari');
@@ -1302,9 +1303,15 @@ BEGIN
     n := n+1; RAISE NOTICE 'OK %/79 - damage hanya menunjuk foto pemilik sendiri', n;
   END;
 
-  -- 77 · handovers_performer_matches_owner: petugas usaha lain ditolak
+  -- 77 · handovers_performer_matches_owner: petugas usaha lain ditolak.
+  --      Booking sendiri: b1 sudah punya handover dua arah, dan unique index
+  --      one_per_direction akan menolak lebih dulu -- membuktikan hal yang salah.
+  INSERT INTO bookings (id, owner_id, code, resource_unit_id, start_at, end_at,
+                        end_at_with_buffer, status)
+  VALUES (b77, o1, 'SWN-0077', u1, '2026-12-01 09:00+07', '2026-12-02 09:00+07',
+          '2026-12-02 09:00+07', 'draft');
   BEGIN
-    INSERT INTO handovers (owner_id, booking_id, direction, performed_by) VALUES (o1, b1, 'return', gen_random_uuid());
+    INSERT INTO handovers (owner_id, booking_id, direction, performed_by) VALUES (o1, b77, 'pickup', gen_random_uuid());
     RAISE EXCEPTION 'GAGAL: handover dengan petugas asing diterima';
   EXCEPTION WHEN foreign_key_violation THEN
     n := n+1; RAISE NOTICE 'OK %/79 - petugas serah-terima wajib dari usaha yang sama', n;
