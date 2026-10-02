@@ -192,6 +192,7 @@ erDiagram
         bigint deposit_deducted
         bigint deposit_refunded
         text deposit_note
+        timestamptz deposit_settled_at "BR-049: syarat complete"
         timestamptz expires_at "BR-027, hanya untuk draft"
         text cancelled_reason
     }
@@ -271,9 +272,12 @@ erDiagram
         text object_key
         bigint ai_amount "rekomendasi (BR-062)"
         timestamptz ai_paid_at
-        text match_status "match | mismatch | unreadable"
+        text match_status "match | mismatch | unreadable | NULL = belum dibaca (BR-062)"
+        text review_status "pending | approved | rejected -- keputusan manusia"
         uuid reviewed_by FK
         timestamptz reviewed_at
+        text reject_reason
+        uuid payment_id FK "terisi saat disetujui"
     }
 
     notifications {
@@ -347,8 +351,8 @@ createdb sewain_scratch && psql sewain_scratch -f docs/03-verify-overlap-constra
 ```
 
 **Constraint sisanya punya skripnya sendiri:** `docs/03-verify-constraints.sql` — pola
-sama: **79 `NOTICE OK` constraint plus 6 `NOTICE OK RLS`** yang membuktikan isolasi BR-001.
-Kasusnya 79 untuk 81 constraint: beberapa diuji dari dua arah, dan empat target `UNIQUE (id, owner_id)` diuji lewat FK yang menunjuknya — menolak yang salah **dan**
+sama: **92 `NOTICE OK` constraint plus 6 `NOTICE OK RLS`** yang membuktikan isolasi BR-001.
+Kasusnya 92 untuk 94 constraint: beberapa diuji dari dua arah, dan empat target `UNIQUE (id, owner_id)` diuji lewat FK yang menunjuknya — menolak yang salah **dan**
 menerima yang benar, supaya constraint yang kebablasan ikut ketahuan.
 Yang RLS diuji dari **peran non-superuser**: superuser melewati RLS sepenuhnya, `FORCE`
 sekalipun, jadi mengujinya sebagai diri sendiri akan lulus secara palsu. Tabel di dalamnya sengaja minimal (hanya kolom yang
@@ -953,6 +957,54 @@ ALTER TABLE invoice_lines ADD CONSTRAINT invoice_lines_photo_matches_owner
 
 SELECT enable_owner_rls('invoices');
 SELECT enable_owner_rls('invoice_lines');
+
+-- ── M4 · deposit, pembayaran, bukti transfer (S1-042, S1-044, S1-046) ──
+
+-- BR-048 + BR-049: "sudah diselesaikan" adalah kolom, bukan tebakan dari 0/0 --
+-- dan kalau terisi, potongan + pengembalian HARUS persis sebesar depositnya.
+-- Deposit yang dibebaskan (BR-051) tidak pernah diselesaikan dan tidak pernah
+-- dipotong atau dikembalikan: uangnya tidak pernah masuk.
+ALTER TABLE bookings ADD COLUMN deposit_settled_at timestamptz;
+ALTER TABLE bookings
+  ADD CONSTRAINT bookings_deposit_settlement
+    CHECK (deposit_settled_at IS NULL
+           OR (deposit_amount IS NOT NULL AND deposit_waived_at IS NULL
+               AND deposit_deducted + deposit_refunded = deposit_amount)),
+  ADD CONSTRAINT bookings_deposit_waived_untouched
+    CHECK (deposit_waived_at IS NULL OR (deposit_deducted = 0 AND deposit_refunded = 0));
+
+-- BR-060 + BR-061: lunas penuh, satu yang berhasil per invoice (unique index
+-- payments_one_success_per_invoice di atas). 'gateway' tetap di enum, tak terjangkau.
+ALTER TABLE payments
+  ADD CONSTRAINT payments_method_valid CHECK (method IN ('gateway', 'manual_transfer', 'cash')),
+  ADD CONSTRAINT payments_status_valid CHECK (status IN ('success', 'failed')),
+  ADD CONSTRAINT payments_amount_positive CHECK (amount > 0),
+  ADD CONSTRAINT payments_invoice_matches_owner
+    FOREIGN KEY (invoice_id, owner_id) REFERENCES invoices (id, owner_id),
+  ADD CONSTRAINT payments_approver_matches_owner
+    FOREIGN KEY (approved_by, owner_id) REFERENCES users (id, owner_id);
+
+-- BR-062: hasil pembacaan otomatis (match_status) adalah REKOMENDASI dan boleh
+-- kosong -- fase 1 belum memakai model. Keputusan manusia (review_status) kolom
+-- terpisah: disetujui WAJIB punya pembayarannya, ditolak WAJIB punya alasannya,
+-- dan direview wajib punya siapa + kapan.
+ALTER TABLE payment_proofs
+  ADD CONSTRAINT payment_proofs_review_valid
+    CHECK (review_status IN ('pending', 'approved', 'rejected')),
+  ADD CONSTRAINT payment_proofs_match_valid
+    CHECK (match_status IS NULL OR match_status IN ('match', 'mismatch', 'unreadable')),
+  ADD CONSTRAINT payment_proofs_reviewed_complete
+    CHECK ((review_status = 'pending') = (reviewed_at IS NULL)
+           AND num_nonnulls(reviewed_by, reviewed_at) IN (0, 2)),
+  ADD CONSTRAINT payment_proofs_reject_reason
+    CHECK ((review_status = 'rejected') = (reject_reason IS NOT NULL)),
+  ADD CONSTRAINT payment_proofs_approved_has_payment
+    CHECK ((review_status = 'approved') = (payment_id IS NOT NULL)),
+  ADD CONSTRAINT payment_proofs_invoice_matches_owner
+    FOREIGN KEY (invoice_id, owner_id) REFERENCES invoices (id, owner_id);
+
+SELECT enable_owner_rls('payments');
+SELECT enable_owner_rls('payment_proofs');
 ```
 
 **Index untuk kecepatan** (PRD §9: < 1 detik untuk 500 unit × 12 bulan):

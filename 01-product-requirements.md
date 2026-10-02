@@ -335,9 +335,9 @@ dan `completed` nggak diblokir. `BR-016, BR-049`
 - Given saya tekan Simpan dua kali karena sinyal jelek, Then penyewa **nggak** ditagih dua
 kali untuk satu lecet. `BR-090`
 
-**C2b.** Sebagai operator, saya ingin membebaskan deposit untuk penyewa tertentu, supaya
-pelanggan lama nggak perlu menaruh jaminan dan nggak perlu nunggu juragan angkat telepon.
-`BR-051`
+**C2b.** Sebagai pemilik, saya ingin membebaskan deposit untuk penyewa tertentu, supaya
+pelanggan lama nggak perlu menaruh jaminan. `BR-051` *(M4: hanya pemilik — versi lama
+menulis "operator"; lihat catatan di BR-051.)*
 
 - Given invoice yang memuat baris `deposit` belum lunas, When saya bebaskan depositnya,
 Then barisnya dicabut, total invoice turun, dan alasan saya tercatat.

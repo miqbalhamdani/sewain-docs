@@ -97,8 +97,10 @@ Idempotency-Key: 8f3a1c92-…        ← UUID dibuat klien, satu per niat penggu
 Satu kunci mewakili **satu niat pengguna**, bukan satu percobaan jaringan. Klien yang membuat
 kunci baru setiap retry sudah membatalkan seluruh gunanya. Wajib pada `POST /bookings`,
 `/public/bookings`, `/invoices/{id}/lines`, `/invoices/{id}/payments`, `/bookings/{id}/pickup`,
-`/bookings/{id}/return`, `/bookings/{id}/deposit/settle`, dan
-`/bookings/{id}/deposit/waive`.
+`/bookings/{id}/return`, `/bookings/{id}/deposit/settle`,
+`/bookings/{id}/deposit/waive`, `/bookings/{id}/complete`, dan `/proofs/{id}/approve` — dua
+yang terakhir ditambahkan di M4: menyetujui bukti menerbitkan pembayaran, dan setiap POST
+yang menghasilkan uang ada di daftar ini (BR-090).
 
 Penyimpanannya Redis, bukan tabel — lihat `03-erd.md` §4.
 
@@ -205,6 +207,7 @@ lifecycle rule — nol job penyapu, nol query silang ke database.
 | `verification-token-invalid` | 422 | Tautan verifikasi kedaluwarsa, sudah dipakai, atau tidak dikenal | BR-006 |
 | `deposit-already-paid` | 409 | Pembebasan deposit setelah invoice-nya lunas | BR-051 |
 | `deposit-not-applicable` | 409 | Pembebasan/penyelesaian deposit pada booking tanpa deposit | BR-016, BR-051 |
+| `deposit-not-collected` | 409 | Penyelesaian deposit sebelum invoice yang memuatnya lunas | BR-048 |
 | `waiver-reason-required` | 422 | Pembebasan dikirim tanpa alasan | BR-051 |
 
 **404 seragam.** Host tidak dikenal, pemilik `suspended`, dan resource milik
@@ -774,7 +777,7 @@ dengan jujur, jadi jalur pembebasannya adalah bagian dari desain, bukan celah
 | Method | Path | Peran | BR |
 |---|---|---|---|
 | `GET` | `/bookings/{id}/deposit` | semua | BR-048 |
-| `POST` | `/bookings/{id}/deposit/waive` | semua | BR-051 |
+| `POST` | `/bookings/{id}/deposit/waive` | 🔒 owner (`deposits:waive`) | BR-051 |
 | `POST` | `/bookings/{id}/deposit/settle` | semua | BR-048, BR-049 |
 | `POST` | `/bookings/{id}/complete` | semua | BR-049 |
 
@@ -832,6 +835,18 @@ sebesar nilai deposit — persis yang BR-050 ada untuk mencegah.
 | Invoice yang memuat baris `deposit` sudah lunas | `409 deposit-already-paid` |
 | `reason` kosong | `422 waiver-reason-required` |
 | Booking memang tanpa deposit | `409 deposit-not-applicable` |
+| Peran `operator` | `403` — diputuskan di M4, lihat catatan BR-051 |
+
+`POST …/deposit/settle` — body `{ "note": "…" }`, `note` **wajib bila ada potongan**
+(BR-049). Hanya untuk booking `returned` yang depositnya ada, belum dibebaskan, dan belum
+diselesaikan. **Deposit menyerap tagihan kembali:** invoice kembali yang belum lunas
+(baris `late_fee`/`damage` dari `POST …/return`) **dibatalkan** — barisnya tetap jadi
+rincian — lalu `deposit_deducted` + `deposit_refunded` dicatat persis sebesar deposit
+(`bookings_deposit_settlement`), dan **hanya selisih kurangnya** terbit sebagai invoice
+baru (BR-048). Tanpa ini penyewa membayar potongan yang sama dua kali: sekali lewat
+invoice kembali, sekali dari depositnya. Invoice yang memuat baris `deposit` belum lunas
+→ **`409 deposit-not-collected`**: uangnya belum di tangan pemilik, jadi tidak ada yang
+bisa dikembalikan atau dipotong — catat pembayarannya dulu, atau bebaskan depositnya.
 
 Sesudah lunas tidak ada jalur pembebasan sama sekali — yang ada pengembalian lewat
 `settle` (BR-048). Itu yang menjaga satu hal tetap benar: **tidak ada invoice lunas
@@ -847,7 +862,17 @@ yang pernah diubah.**
 | `POST` | `/invoices/{id}/payment-link` | — | **[nonaktif]** → §3.8.1 |
 | `POST` | `/invoices/{id}/payments` | semua | BR-060, BR-061 |
 | `POST` | `/invoices/{id}/proofs` | semua | BR-062 |
+| `GET` | `/invoices/{id}/proofs` | semua | BR-062 |
 | `POST` | `/proofs/{id}/approve` | semua | BR-062 |
+| `POST` | `/proofs/{id}/reject` | semua | BR-062 |
+
+`POST …/payments` — `{ "method": "cash" | "manual_transfer", "amount": 1200000,
+"paid_at": "…" }`; `amount` wajib sama dengan total (lunas penuh, BR-060), `paid_at`
+kosong berarti sekarang. Bukti transfer: `review_status` (`pending` → `approved` |
+`rejected`) adalah keputusan manusia, `match_status` hasil pembacaan otomatis yang boleh
+`null` — **fase 1 belum memakai model apa pun**, jadi setiap bukti tampil "belum dibaca,
+periksa manual". `approve` menerbitkan pembayaran `manual_transfer` sebesar total, invoice
+`paid`, dan bukti `approved` dalam satu transaksi; `reject` wajib `{ "reason": "…" }`.
 
 `total` selalu hasil penjumlahan `lines` pada saat dibaca — tidak ada kolom total
 (BR-055). `POST …/payments` kedua atas invoice yang sama → `409

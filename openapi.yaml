@@ -1571,27 +1571,33 @@ paths:
   /invoices:
     get:
       operationId: listInvoices
-      summary: Invoice satu booking
+      summary: Invoice — per booking, atau daftar penuh untuk owner
       description: |
-        Semua peran (`invoices:read`), **wajib `booking_id`** — daftar penuh lintas
-        booking adalah milik owner dan menyusul di M4 (BR-003). Total selalu
-        `SUM(lines)`, dihitung saat dibaca (BR-055).
+        Dengan `booking_id`: semua peran (`invoices:read`), terlama dulu, satu halaman.
+        Tanpa `booking_id`: **daftar penuh lintas booking, hanya `owner`**
+        (`reports:read`, BR-003) — terbaru dulu, paginasi cursor, saring `status`.
+        Total selalu `SUM(lines)`, dihitung saat dibaca (BR-055).
       parameters:
         - name: booking_id
           in: query
-          required: true
+          required: false
           schema:
             type: string
             format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/InvoiceStatus"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
-          description: Invoice booking itu, terlama dulu.
+          description: Satu halaman invoice.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Invoice"
+                $ref: "#/components/schemas/InvoicePage"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1622,6 +1628,349 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /bookings/{id}/deposit:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      operationId: previewDeposit
+      summary: Pratinjau penyelesaian deposit
+      description: |
+        Semua peran (`bookings:read`). Tidak menyimpan apa pun. `deductions` =
+        jumlah baris `late_fee` + `damage` yang terbit saat kembali dan belum
+        dibatalkan — potongan yang sudah dicentang operator (BR-051).
+        Sisa negatif tidak pernah jadi deposit minus: `new_invoice_amount` (BR-048).
+        Booking tanpa deposit atau yang depositnya dibebaskan: `deposit_amount: null`
+        dan angka lain nol — `complete` tidak diblokir (BR-016).
+      responses:
+        "200":
+          description: Pratinjau.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DepositPreview"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /bookings/{id}/deposit/settle:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    post:
+      operationId: settleDeposit
+      summary: Selesaikan deposit
+      description: |
+        Semua peran (`bookings:write`). Hanya `returned`, sekali. Deposit **menyerap**
+        tagihan kembali: invoice kembali yang belum lunas dibatalkan (barisnya tetap
+        jadi rincian), `deposit_deducted` + `deposit_refunded` = `deposit_amount`
+        tercatat, dan **hanya selisih kurangnya** terbit sebagai invoice baru (BR-048).
+        Pengembalian uangnya sendiri terjadi di luar sistem; yang dicatat jumlahnya.
+
+        - `note` wajib bila ada potongan (BR-049) → `422 validation-failed`
+        - tanpa deposit / sudah dibebaskan → `409 deposit-not-applicable`
+        - invoice yang memuat deposit belum lunas → `409 deposit-not-collected`
+          — uangnya belum di tangan, jadi tidak ada yang bisa dikembalikan atau dipotong
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettleRequest"
+      responses:
+        "200":
+          description: Booking sesudah depositnya diselesaikan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /bookings/{id}/deposit/waive:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    post:
+      operationId: waiveDeposit
+      summary: Bebaskan deposit
+      description: |
+        Hanya peran `owner` (`deposits:waive`). Selama invoice yang memuatnya belum
+        lunas: baris `deposit` **dicabut**, bukan diimbangi `discount` (BR-050, BR-051).
+        Pelaku, waktu, dan alasan tercatat di booking dan di `audit_logs`.
+
+        - invoice-nya sudah lunas → `409 deposit-already-paid`
+        - `reason` kosong → `422 waiver-reason-required`
+        - tanpa deposit / sudah dibebaskan → `409 deposit-not-applicable`
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WaiveRequest"
+      responses:
+        "200":
+          description: Booking sesudah depositnya dibebaskan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /bookings/{id}/complete:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    post:
+      operationId: completeBooking
+      summary: Tandai booking selesai
+      description: |
+        Semua peran (`bookings:write`). `returned` → `completed`. Deposit yang ada,
+        belum dibebaskan, dan belum diselesaikan → `409 deposit-not-settled` (BR-049).
+        Booking tanpa deposit tidak diblokir.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Booking selesai.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /invoices/{id}/payments:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    post:
+      operationId: recordPayment
+      summary: Catat pembayaran tunai atau transfer yang sudah dicek
+      description: |
+        Semua peran (`payments:write`, BR-003). Lunas penuh saja: `amount` wajib sama
+        dengan total invoice (BR-060) → selain itu `422`. Pembayaran kedua atas invoice
+        yang sama → `409 invoice-already-paid`, juga saat dua permintaan balapan —
+        unique index `payments_one_success_per_invoice` yang memutuskan. Invoice
+        `cancelled` → `422`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentRequest"
+      responses:
+        "201":
+          description: Invoice sesudah lunas.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /invoices/{id}/proofs:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      operationId: listProofs
+      summary: Bukti transfer satu invoice
+      description: Semua peran (`invoices:read`). URL bertanda tangan berumur 15 menit.
+      responses:
+        "200":
+          description: Bukti, terbaru dulu.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PaymentProof"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    post:
+      operationId: uploadProof
+      summary: Serahkan bukti transfer
+      description: |
+        Semua peran (`payments:write`). `object_key` dari `/uploads/presign` dengan
+        `kind: payment_proof` (gambar atau PDF); server mem-`HEAD` lalu menyalinnya ke
+        `proofs/<owner_id>/<invoice_id>/…` (BR-093). Pembacaan otomatis berjalan
+        **asinkron** di worker dan hanya rekomendasi (BR-062) → `202`.
+        Fase 1 belum memakai model apa pun: bukti tetap `match_status: null` —
+        "belum dibaca, periksa manual".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProofInput"
+      responses:
+        "202":
+          description: Bukti tersimpan; pembacaannya menyusul.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentProof"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /proofs/{id}/approve:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    post:
+      operationId: approveProof
+      summary: Setujui bukti — invoice lunas
+      description: |
+        Semua peran (`payments:write`). **Satu-satunya jalan bukti transfer jadi lunas
+        adalah manusia menekan ini** (BR-062). Satu transaksi: pembayaran
+        `manual_transfer` sebesar total invoice, invoice `paid`, bukti `approved`.
+        Invoice sudah lunas → `409 invoice-already-paid`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Invoice sesudah lunas.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /proofs/{id}/reject:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    post:
+      operationId: rejectProof
+      summary: Tolak bukti transfer
+      description: Semua peran (`payments:write`). Alasan wajib — penyewa perlu tahu kenapa.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RejectRequest"
+      responses:
+        "200":
+          description: Bukti sesudah ditolak.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentProof"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
 
 
 components:
@@ -2732,8 +3081,23 @@ components:
       required: [id, code, status, source, customer, resource, unit, start_at, end_at,
                  end_at_with_buffer, overdue, unit_price, pricing_unit, buffer_minutes,
                  duration_qty, subtotal, deposit_amount, late_fee_per_unit,
-                 cancelled_reason, expires_at, created_at, actual_return_at]
+                 cancelled_reason, expires_at, created_at, actual_return_at,
+                 deposit_waived_at, deposit_settled_at, deposit_deducted, deposit_refunded]
       properties:
+        deposit_waived_at:
+          type: [string, "null"]
+          format: date-time
+          description: Deposit dibebaskan pemilik sebelum dibayar (BR-051).
+        deposit_settled_at:
+          type: [string, "null"]
+          format: date-time
+          description: Deposit sudah diselesaikan — syarat `complete` (BR-049).
+        deposit_deducted:
+          type: integer
+          format: int64
+        deposit_refunded:
+          type: integer
+          format: int64
         actual_return_at:
           type: [string, "null"]
           format: date-time
@@ -2955,7 +3319,7 @@ components:
 
     UploadKind:
       type: string
-      enum: [handover_photo, identity_photo]
+      enum: [handover_photo, identity_photo, payment_proof]
 
     PresignRequest:
       type: object
@@ -2965,7 +3329,8 @@ components:
           $ref: "#/components/schemas/UploadKind"
         content_type:
           type: string
-          enum: [image/jpeg, image/png, image/webp]
+          description: "`application/pdf` hanya untuk `payment_proof`."
+          enum: [image/jpeg, image/png, image/webp, application/pdf]
         bytes:
           type: integer
           format: int64
@@ -3227,6 +3592,141 @@ components:
         waiver_reason:
           type: [string, "null"]
 
+    DepositPreview:
+      type: object
+      required: [deposit_amount, collected, waived, settled_at, deductions, refund_amount,
+                 deducted_amount, new_invoice_amount]
+      properties:
+        deposit_amount:
+          type: [integer, "null"]
+          format: int64
+          description: "`null` = tanpa deposit atau dibebaskan; tidak ada yang perlu diselesaikan."
+        collected:
+          type: boolean
+          description: Invoice yang memuat deposit sudah lunas — uangnya di tangan pemilik.
+        waived:
+          type: boolean
+        settled_at:
+          type: [string, "null"]
+          format: date-time
+        deductions:
+          type: integer
+          format: int64
+        refund_amount:
+          type: integer
+          format: int64
+        deducted_amount:
+          type: integer
+          format: int64
+        new_invoice_amount:
+          type: integer
+          format: int64
+
+    SettleRequest:
+      type: object
+      properties:
+        note:
+          type: string
+          maxLength: 500
+          description: Wajib bila ada potongan (BR-049).
+
+    WaiveRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+
+    PaymentRequest:
+      type: object
+      required: [method, amount]
+      properties:
+        method:
+          type: string
+          enum: [manual_transfer, cash]
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+        paid_at:
+          type: string
+          format: date-time
+          description: Kapan uangnya diterima; kosong = sekarang.
+
+    ProofInput:
+      type: object
+      required: [object_key]
+      properties:
+        object_key:
+          type: string
+
+    RejectRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+
+    PaymentProof:
+      type: object
+      required: [id, invoice_id, url, content_type, review_status, match_status, ai_amount,
+                 ai_paid_at, reviewed_by, reviewed_at, reject_reason, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        invoice_id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          description: Bertanda tangan, 15 menit.
+        content_type:
+          type: string
+        review_status:
+          type: string
+          enum: [pending, approved, rejected]
+        match_status:
+          description: |
+            Rekomendasi pembacaan otomatis (BR-062), bukan keputusan. `null` = belum
+            dibaca — di fase 1 selalu, karena belum ada model.
+          oneOf:
+            - type: string
+              enum: [match, mismatch, unreadable]
+            - type: "null"
+        ai_amount:
+          type: [integer, "null"]
+          format: int64
+        ai_paid_at:
+          type: [string, "null"]
+          format: date-time
+        reviewed_by:
+          type: [string, "null"]
+          description: Nama yang menyetujui atau menolak.
+        reviewed_at:
+          type: [string, "null"]
+          format: date-time
+        reject_reason:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+
+    InvoicePage:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Invoice"
+        next_cursor:
+          type: [string, "null"]
+
     ErrorCode:
       type: string
       description: |
@@ -3261,6 +3761,11 @@ components:
         - payment-required-before-pickup
         - physical-conflict-unconfirmed
         - waiver-reason-required
+        - deposit-not-settled
+        - deposit-not-collected
+        - invoice-already-paid
+        - deposit-already-paid
+        - deposit-not-applicable
 
     ProblemError:
       type: object

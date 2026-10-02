@@ -844,7 +844,7 @@ yang menjaga satu hal tetap benar: **tidak ada invoice lunas yang pernah diubah.
 
 | Yang dibebaskan | Kapan masih bisa | Siapa |
 |---|---|---|
-| Deposit | selama invoice yang memuat barisnya belum lunas | operator & pemilik |
+| Deposit | selama invoice yang memuat barisnya belum lunas | **pemilik saja** (M4) |
 | Denda telat | saat pengembalian diproses, sebelum barisnya terbit | operator & pemilik |
 | Biaya kerusakan | saat pengembalian diproses, sebelum barisnya terbit | operator & pemilik |
 
@@ -854,6 +854,13 @@ di booking. Membebaskan penagihan pada satu booking tidak menyentuh angka itu:
 `bookings.deposit_amount` tetap utuh apa adanya, yang berubah cuma apakah barisnya
 ditagih. Nilainya urusan pemilik; penagihan satu transaksi urusan orang yang sedang
 melayani penyewa di konter.
+
+> **Diputuskan di M4: pembebasan deposit hanya pemilik** (`deposits:waive`). Backlog
+> (`S1-042`, `S1-048`) dan kontrak lama saling bertentangan; yang dipilih adalah yang
+> lebih sempit, karena deposit yang dibebaskan adalah uang jaminan yang dilepas, dan itu
+> keputusan juragan. Denda telat dan biaya kerusakan tetap boleh dibebaskan operator saat
+> pengembalian — di situ konteksnya ada di depan mata, dan alasannya wajib. Paragraf di
+> bawah tetap berlaku untuk keduanya.
 
 Yang membuatnya aman bukan pembatasan peran, tapi **jejaknya**: tiap pembebasan
 menulis siapa, kapan, dan alasannya, dan ketiganya wajib terisi bersama
@@ -1362,7 +1369,7 @@ satu AC atau satu test.
 | BR-041, BR-042 | C3 | Test kondisi terlambat & peringatan bentrok fisik |
 | BR-045, BR-047, BR-048 | C2 | Test penyelesaian deposit, termasuk kasus sisa negatif; test booking tanpa deposit: potongan & pengembalian **ditolak database** |
 | BR-049 | D3 | Test: `completed` diblokir sebelum deposit selesai — dan **tidak** diblokir kalau booking-nya tanpa deposit |
-| BR-051 | C2 | Test pembebasan: baris tak dicentang tidak terbit; pembebasan tanpa alasan → `422`; **operator boleh membebaskan deposit** selama invoice belum lunas, dan jejaknya terisi bertiga; pembebasan setelah invoice lunas ditolak; dua `POST` berkunci sama → satu hasil |
+| BR-051 | C2 | Test pembebasan: baris tak dicentang tidak terbit; pembebasan tanpa alasan → `422`; **hanya pemilik yang bisa membebaskan deposit** (operator → `403`) selama invoice belum lunas, dan jejaknya terisi bertiga; pembebasan setelah invoice lunas ditolak; dua `POST` berkunci sama → satu hasil |
 | BR-050, BR-076 | F1 | Test: deposit tidak masuk angka pemasukan |
 | BR-055, BR-056 | D1 | Test invoice berbaris; `overdue` terbit saat lewat `due_at`, dan **tidak** tertukar dengan `overdue` booking (BR-041) |
 | BR-057 | D2, §7.5 | Test tenggat: `due_at` = `min(created_at + payment_due_hours, start_at)`; **sakelar menyala** → booking belum lunas jadi `cancelled (payment_expired)` dan unit bebas; **sakelar mati** → booking tetap, batasnya `no_show` lewat `start_at + no_show_tolerance_hours`; `payment_due_reminder` terkirim **sebelum** pembatalan |
