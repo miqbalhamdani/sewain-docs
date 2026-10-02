@@ -158,7 +158,8 @@ erDiagram
         text name
         text phone
         text id_type "ktp | sim | passport"
-        bytea id_number_enc "terenkripsi (BR-085)"
+        bytea id_number_enc "AES-256-GCM aplikasi, kunci IDENTITY_ENC_KEY (BR-085)"
+        text id_number_last4 "empat digit terakhir, untuk mencocokkan kartu tanpa membuka enkripsi"
         text id_photo_key "kunci objek; terenkripsi at-rest di R2, bukan aplikasi (BR-085)"
         bool is_blacklisted "BR-028"
         text blacklist_reason
@@ -899,7 +900,15 @@ ALTER TABLE invoices ADD CONSTRAINT invoices_one_subject
 -- Tidak ada index gist terpisah untuk pencarian rentang per unit: bookings_no_overlap
 -- SUDAH membangun index gist persis itu -- kolom, ekspresi, dan predikat WHERE yang
 -- sama. Versi lama dokumen ini menulisnya dua kali; index kedua cuma menggandakan
--- biaya tiap INSERT. Query ketersediaan memakai index milik constraint.
+-- biaya tiap INSERT.
+--
+-- Dan index gist itu TIDAK dipakai pembacaan aplikasi: di bawah RLS, PostgreSQL
+-- tidak memakai qual yang tidak leakproof sebagai kondisi index, dan && range
+-- serta tstzrange() tidak leakproof -- 500 unit x 12 bulan makan 1,6 detik.
+-- Pembacaan menulis irisan sebagai dua perbandingan timestamptz (leakproof)
+-- terhadap btree ini: start_at < $akhir AND end_at_with_buffer > $awal.
+CREATE INDEX bookings_unit_start ON bookings (owner_id, resource_unit_id, start_at)
+  WHERE status IN ('reserved','picked_up') AND deleted_at IS NULL;
 CREATE INDEX bookings_owner_status_start ON bookings (owner_id, status, start_at);
 CREATE INDEX resource_units_owner_resource_status
   ON resource_units (owner_id, resource_id, status) WHERE deleted_at IS NULL;

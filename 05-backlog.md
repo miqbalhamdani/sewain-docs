@@ -302,24 +302,54 @@ ada satu pun bagian lain yang layak dibangun.
 
 | ID | Item | Repo | Depends | Acceptance | Status | Owner |
 |---|---|---|---|---|---|---|
-| S1-020 | Skema `customers` + blacklist | BE | 007 | Hanya `owner` yang bisa memblokir/membuka (BR-028) | wip | Claude |
-| S1-021 | Identitas terenkripsi + `audit_logs` | BE | 020 | Membaca foto identitas menulis satu baris audit dalam transaksi yang sama (BR-085) | wip | Claude |
-| S1-022 | **Skema `bookings` + `end_at_with_buffer` + `bookings_no_overlap`** | BE | 015, 020 | Booking 3–5 Sep menolak booking 4–6 Sep untuk unit sama; berakhir 10:00 vs mulai 10:00 **tidak** bentrok; `end_at_with_buffer` diisi **trigger**, bukan aplikasi — nilai kiriman klien ditimpa; klausa `WHERE` constraint hanya memuat `reserved` & `picked_up`, jadi `draft` tidak mengunci (BR-023). **Jalankan `docs/03-verify-overlap-constraint.sql` dulu** — ia membuktikan semuanya di database scratch tanpa kode (BR-015, BR-022, BR-023) | wip | Claude |
-| S1-023 | **Test konkurensi** — dua insert bersamaan | BE | 022 | `make test-race`: tepat satu berhasil, satunya `booking-conflict`. Masuk `make check` selamanya | wip | Claude |
-| S1-024 | `booking_counters` + kode `<prefix>-nnnn` | BE | 022 | Unik per owner; menghapus booking tidak pernah mendaur ulang nomor; prefix dibaca dari `owners.booking_code_prefix` **saat kode dibuat** — mengubahnya tidak menyentuh kode lama dan tidak me-reset pencacah (BR-024) | wip | Claude |
-| S1-025 | Pencarian ketersediaan | BE | 022 | p95 < 1 detik untuk 500 unit × 12 bulan; unit `maintenance` hilang; buffer 120 menit menggeser tersedia dari 10:00 ke 12:00 (BR-013, BR-015, BR-020) | wip | Claude |
-| S1-026 | Bookings API: create, confirm, cancel | BE | 012, 024, 025 | Snapshot harga & buffer terisi server; durasi di luar `min`/`max` → `422`; penyewa blacklist → `422`; `confirm` menjalankan **ulang** cek bentrok (BR-014, BR-021, BR-026, BR-028) ; `min`/`max` kosong berarti **tanpa batas**, bukan nol; snapshot `deposit_amount`/`late_fee_per_unit` yang `NULL` tersalin sebagai `NULL` (BR-016) | wip | Claude |
-| S1-027 | Tukar unit pada booking `reserved` | BE | 026 | Unit tujuan lolos cek bentrok; setelah `picked_up` → `409 unit-not-swappable` (BR-029) | wip | Claude |
-| S1-078 | `GET /calendar` + `state` delapan keadaan | BE | 025, 041 | Satu field `state` per segmen, **dihitung server** — klien tidak pernah menyusunnya dari gabungan status booking + status invoice + status unit; `is_overdue` **tidak lagi** field terpisah, ia salah satu nilai `state`; `draft` tidak pernah muncul; respons publik hanya `available`/tidak (BR-033, BR-025) | wip | Claude |
-| S1-028 | **Kalender ketersediaan** | FE | 025, 078 | Satu lajur per unit, **semua unit**, dengan windowing — hanya sel dalam viewport yang dirender. **50 unit × 30 hari: first byte p95 < 1 detik** (sama anggaran dengan `S1-025`); pan & scroll dalam rentang yang sudah termuat **tanpa fetch ulang**; **200 unit × 12 bulan tetap responsif** — tidak membeku, tidak merender 182.500 sel; render awal dari server, bukan air terjun fetch di klien **Legenda delapan keadaan tampil di layar**, tiap blok berlabel teks + pola — bukan cuma warna; `draft` tidak dirender, `returned` tampil `available`, unit `retired` tidak punya lajur (BR-033) | wip | Claude |
-| S1-029 | Form booking | FE | 026 | Operator berpengalaman selesai **< 60 detik**; `409 booking-conflict` menampilkan booking yang bentrok + aksi pilih tanggal/unit lain, tidak pernah retry otomatis | wip | Claude |
-| S1-030 | Daftar booking + filter | FE | 026 | Filter `overdue` bekerja sebagai kondisi turunan, bukan status di dropdown (BR-041) | wip | Claude |
-| S1-031 | Layar penyewa + blacklist | FE | 020 | Aksi blokir/buka hanya dirender untuk `owner`; peringatan blacklist muncul saat membuat booking (BR-028) | wip | Claude |
-| S1-032 | Tukar unit dari layar booking | FE | 027 | Aksi hilang begitu status `picked_up` — bukan muncul lalu gagal (BR-029) | wip | Claude |
+| S1-020 | Skema `customers` + blacklist | BE | 007 | Hanya `owner` yang bisa memblokir/membuka (BR-028) | done | Claude |
+| S1-021 | Identitas terenkripsi + `audit_logs` | BE | 020 | Membaca foto identitas menulis satu baris audit dalam transaksi yang sama (BR-085) | wip | Claude — `audit_logs` (append-only lewat REVOKE) + enkripsi `id_number` selesai; **foto identitas menunggu `S1-033`** (presign/HEAD), jadi baris audit "membaca foto" belum punya pembaca |
+| S1-022 | **Skema `bookings` + `end_at_with_buffer` + `bookings_no_overlap`** | BE | 015, 020 | Booking 3–5 Sep menolak booking 4–6 Sep untuk unit sama; berakhir 10:00 vs mulai 10:00 **tidak** bentrok; `end_at_with_buffer` diisi **trigger**, bukan aplikasi — nilai kiriman klien ditimpa; klausa `WHERE` constraint hanya memuat `reserved` & `picked_up`, jadi `draft` tidak mengunci (BR-023). **Jalankan `docs/03-verify-overlap-constraint.sql` dulu** — ia membuktikan semuanya di database scratch tanpa kode (BR-015, BR-022, BR-023) | done | Claude |
+| S1-023 | **Test konkurensi** — dua insert bersamaan | BE | 022 | `make test-race`: tepat satu berhasil, satunya `booking-conflict`. Masuk `make check` selamanya | done | Claude |
+| S1-024 | `booking_counters` + kode `<prefix>-nnnn` | BE | 022 | Unik per owner; menghapus booking tidak pernah mendaur ulang nomor; prefix dibaca dari `owners.booking_code_prefix` **saat kode dibuat** — mengubahnya tidak menyentuh kode lama dan tidak me-reset pencacah (BR-024) | done | Claude |
+| S1-025 | Pencarian ketersediaan | BE | 022 | p95 < 1 detik untuk 500 unit × 12 bulan; unit `maintenance` hilang; buffer 120 menit menggeser tersedia dari 10:00 ke 12:00 (BR-013, BR-015, BR-020) | done | Claude |
+| S1-026 | Bookings API: create, confirm, cancel | BE | 012, 024, 025 | Snapshot harga & buffer terisi server; durasi di luar `min`/`max` → `422`; penyewa blacklist → `422`; `confirm` menjalankan **ulang** cek bentrok (BR-014, BR-021, BR-026, BR-028) ; `min`/`max` kosong berarti **tanpa batas**, bukan nol; snapshot `deposit_amount`/`late_fee_per_unit` yang `NULL` tersalin sebagai `NULL` (BR-016) | done | Claude |
+| S1-027 | Tukar unit pada booking `reserved` | BE | 026 | Unit tujuan lolos cek bentrok; setelah `picked_up` → `409 unit-not-swappable` (BR-029) | done | Claude |
+| S1-078 | `GET /calendar` + `state` delapan keadaan | BE | 025, 041 | Satu field `state` per segmen, **dihitung server** — klien tidak pernah menyusunnya dari gabungan status booking + status invoice + status unit; `is_overdue` **tidak lagi** field terpisah, ia salah satu nilai `state`; `draft` tidak pernah muncul; respons publik hanya `available`/tidak (BR-033, BR-025) | done | Claude |
+| S1-028 | **Kalender ketersediaan** | FE | 025, 078 | Satu lajur per unit, **semua unit**, dengan windowing — hanya sel dalam viewport yang dirender. **50 unit × 30 hari: first byte p95 < 1 detik** (sama anggaran dengan `S1-025`); pan & scroll dalam rentang yang sudah termuat **tanpa fetch ulang**; **200 unit × 12 bulan tetap responsif** — tidak membeku, tidak merender 182.500 sel; render awal dari server, bukan air terjun fetch di klien **Legenda delapan keadaan tampil di layar**, tiap blok berlabel teks + pola — bukan cuma warna; `draft` tidak dirender, `returned` tampil `available`, unit `retired` tidak punya lajur (BR-033) | done | Claude |
+| S1-029 | Form booking | FE | 026 | Operator berpengalaman selesai **< 60 detik**; `409 booking-conflict` menampilkan booking yang bentrok + aksi pilih tanggal/unit lain, tidak pernah retry otomatis | done | Claude |
+| S1-030 | Daftar booking + filter | FE | 026 | Filter `overdue` bekerja sebagai kondisi turunan, bukan status di dropdown (BR-041) | done | Claude |
+| S1-031 | Layar penyewa + blacklist | FE | 020 | Aksi blokir/buka hanya dirender untuk `owner`; peringatan blacklist muncul saat membuat booking (BR-028) | done | Claude |
+| S1-032 | Tukar unit dari layar booking | FE | 027 | Aksi hilang begitu status `picked_up` — bukan muncul lalu gagal (BR-029) | done | Claude |
 
 > **S1-023 adalah item yang membuktikan klaim utama produk ini.** Ia bukan test sekali jalan — ia
 > hidup di `make check` supaya tetap gagal kalau nanti ada yang "mengoptimasi" constraint jadi cek
 > di aplikasi.
+
+> **M2 tuntas kecuali `S1-021`** (foto identitas menunggu `S1-033`). Tiga belas item, dua commit
+> kode — bukan satu per item: `make generate` menambahkan semua route M2 ke `ServerInterface`
+> sekaligus, jadi commit seukuran item tidak bisa dikompilasi.
+>
+> **S1-023 dua test, bukan satu** (`internal/booking/race_test.go`). Acceptance-nya — dua create
+> serentak, tepat satu menang — bisa lulus tanpa constraint kalau scheduler kebetulan
+> menyerialkan goroutine-nya dan pre-check yang menangkap. Test kedua menulis baris kedua saat
+> yang pertama belum commit, melewati pre-check mana pun: drop `bookings_no_overlap` dan ia merah
+> setiap kali.
+>
+> **Ketemu dengan menjalankan, bukan membaca:** di bawah RLS, PostgreSQL tidak memakai qual yang
+> tidak *leakproof* sebagai kondisi index — dan `&&` range serta `tstzrange()` tidak leakproof.
+> Ketersediaan 500 unit × 12 bulan makan **1,6 detik**. Semua pembacaan kini menulis irisan
+> sebagai dua perbandingan `timestamptz` terhadap btree `bookings_unit_start`; p95 **14 ms**,
+> kalender 500 × 12 bulan **98 ms**. Constraint-nya sendiri tidak terdampak (dicek sebagai pemilik
+> tabel). Test perf wajib `ANALYZE` sesudah seeding, atau planner menebak satu baris.
+>
+> **Tiga penyimpangan yang ditulis, bukan diserap:**
+>
+> | Yang tertulis | Yang terjadi | Kenapa |
+> |---|---|---|
+> | `S1-028` "render awal dari server" | Render klien, **satu** fetch per jendela 3 bulan, tanpa air terjun | Access token hanya ada di memori browser; server component tidak punya apa pun untuk memanggil API. Item tersendiri |
+> | `reserved_paid` di kalender | Belum pernah terbit — setiap `reserved` adalah `reserved_unpaid` | Tabel `invoices` baru ada di `S1-041`; "belum dibayar" memang keadaan yang benar sampai itu |
+> | `routeAccessTable` per route | Hanya `POST /bookings` yang idempoten | `accessFor` mencocokkan path literal; `S1-035` (`/bookings/{id}/pickup`) wajib mengajarinya pola dulu |
+>
+> **Satu bug lintas repo yang cuma ketemu di browser:** form booking memakai ulang
+> `Idempotency-Key` sesudah `409`, dan server memutar ulang `409` yang tersimpan untuk submit yang
+> sudah dikoreksi. Kunci kini hidup sampai server *menjawab*; gagal jaringan dan
+> `request-in-flight` tetap memakai kunci yang sama.
 
 ---
 
