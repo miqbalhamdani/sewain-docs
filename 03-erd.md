@@ -479,14 +479,17 @@ ALTER TABLE owners ADD COLUMN allowed_origins text[] NOT NULL DEFAULT '{}';
 CREATE TABLE api_keys (
   id                 uuid PRIMARY KEY,
   owner_id           uuid NOT NULL REFERENCES owners (id),
-  name               text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 80),
-  key_prefix         text NOT NULL CHECK (key_prefix ~ '^[a-z0-9]{8}$'),
+  name               text NOT NULL,
+  key_prefix         text NOT NULL,
   key_hash           text NOT NULL,          -- argon2id; rahasianya tidak pernah disimpan
-  rate_limit_per_min int  NOT NULL DEFAULT 60 CHECK (rate_limit_per_min BETWEEN 1 AND 600),
+  rate_limit_per_min int  NOT NULL DEFAULT 60,
   last_used_at       timestamptz,
   revoked_at         timestamptz,            -- dicabut, tidak dihapus
   created_by         uuid,
   created_at         timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT api_keys_name_length CHECK (char_length(name) BETWEEN 1 AND 80),
+  CONSTRAINT api_keys_prefix_format CHECK (key_prefix ~ '^[a-z0-9]{8}$'),
+  CONSTRAINT api_keys_rate_limit_range CHECK (rate_limit_per_min BETWEEN 1 AND 600),
   CONSTRAINT api_keys_prefix_unique UNIQUE (key_prefix),
   CONSTRAINT api_keys_created_by_matches_owner
     FOREIGN KEY (created_by, owner_id) REFERENCES users (id, owner_id)
