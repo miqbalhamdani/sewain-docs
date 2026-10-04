@@ -1976,6 +1976,170 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
 
+  /dashboard:
+    get:
+      operationId: getDashboard
+      summary: Apa yang perlu ditangani hari ini
+      description: |
+        Semua peran (`bookings:read`). Peringatan, bukan statistik: booking terlambat
+        (BR-041) **sebaris dengan deposit yang belum diselesaikan** — tanpa daftar kedua
+        itu BR-049 cuma ketahuan kalau ada yang membuka booking satu per satu (BR-033
+        sengaja tidak menampilkannya di kalender).
+
+        `revenue_this_month` dan `failed_jobs` **hanya untuk owner** — bagi operator
+        keduanya `null` (BR-003: operator tidak melihat satu pun angka pemasukan).
+        `failed_jobs` adalah dead-letter job runner (BR-072, BR-091).
+        `onboarding` dihitung dari data, bukan kolom progres (BR-005).
+      responses:
+        "200":
+          description: Dashboard.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /reports/revenue:
+    get:
+      operationId: getRevenueReport
+      summary: Pemasukan per jenis baris, deposit terpisah
+      description: |
+        Hanya `owner` (`reports:read`). **Basis kas:** baris invoice `paid` dihitung
+        pada `paid_at` di dalam periode — `rent + late_fee + damage + discount` (BR-076).
+        Potongan yang diserap deposit dihitung pada `deposit_settled_at`, dialokasikan ke
+        `late_fee`/`damage` dengan urutan yang sama seperti penyelesaian deposit, supaya
+        uang yang ditahan dari deposit tidak hilang dari pemasukan.
+
+        Deposit **bukan** pemasukan dan tampil sebagai saldo titipan terpisah (BR-050):
+        `in` = baris deposit yang lunas dalam periode, `returned` = pengembalian yang
+        diselesaikan dalam periode, `balance` = deposit lunas yang belum diselesaikan
+        dan tidak dibebaskan, saat ini.
+      parameters:
+        - $ref: "#/components/parameters/ReportFrom"
+        - $ref: "#/components/parameters/ReportTo"
+      responses:
+        "200":
+          description: Laporan pemasukan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevenueReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /reports/utilization:
+    get:
+      operationId: getUtilizationReport
+      summary: Tingkat pemakaian per unit
+      description: |
+        Hanya `owner`. Per unit `active`: persentase hari dalam periode yang tertutup
+        booking `picked_up`/`returned`/`completed`, dari `start_at` sampai
+        `actual_return_at` (atau `end_at` bila belum kembali). Draft, reserved, batal,
+        dan no-show tidak dihitung — yang diukur barang yang benar-benar keluar.
+      parameters:
+        - $ref: "#/components/parameters/ReportFrom"
+        - $ref: "#/components/parameters/ReportTo"
+      responses:
+        "200":
+          description: Pemakaian per unit, paling rendah dulu.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UtilizationReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /reports/idle-units:
+    get:
+      operationId: getIdleUnitsReport
+      summary: Unit menganggur lebih dari 30 hari
+      description: |
+        Hanya `owner`. Unit `active` yang sewa terakhirnya berakhir lebih dari 30 hari
+        lalu — atau belum pernah disewa dan sudah terdaftar lebih dari 30 hari. Dihitung
+        terhadap sekarang, tanpa periode.
+      responses:
+        "200":
+          description: Unit menganggur, paling lama dulu.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdleUnitsReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /reports/export:
+    post:
+      operationId: exportReport
+      summary: Ekspor laporan ke CSV atau XLSX
+      description: |
+        Hanya `owner`. Berkas dirakit **di luar request** oleh job runner (BR-077,
+        BR-091) → `202` + `job_id`; layar mem-poll `GET /jobs/{id}`. `bookings` =
+        daftar booking terlambat (laporan keempat BR-075). Deposit tetap kolom terpisah
+        dari pemasukan di berkas apa pun (BR-050).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExportRequest"
+      responses:
+        "202":
+          description: Ekspor diantrekan.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job_id]
+                properties:
+                  job_id:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /jobs/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getJob
+      summary: Status pekerjaan asinkron
+      description: |
+        Semua peran, hanya job milik usaha ini — job usaha lain `404` (BR-001). Status
+        tinggal di Redis, bukan tabel, dan hilang 24 jam sesudah dibuat.
+        `download_url` ditandatangani **setiap kali diminta** dan berumur 15 menit
+        (BR-077): tautan yang kedaluwarsa dibuat ulang cukup dengan meminta lagi.
+      responses:
+        "200":
+          description: Status job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 
 components:
 
@@ -2031,6 +2195,24 @@ components:
       schema:
         type: string
         format: uuid
+
+    ReportFrom:
+      name: from
+      in: query
+      required: true
+      description: Awal periode, inklusif. Rentang maksimal 366 hari.
+      schema:
+        type: string
+        format: date-time
+
+    ReportTo:
+      name: to
+      in: query
+      required: true
+      description: Akhir periode, eksklusif.
+      schema:
+        type: string
+        format: date-time
 
   headers:
 
@@ -3757,6 +3939,233 @@ components:
           items:
             $ref: "#/components/schemas/Invoice"
         next_cursor:
+          type: [string, "null"]
+
+    BookingBrief:
+      type: object
+      required: [id, code, status, customer_name, resource_name, unit, start_at, end_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        status:
+          $ref: "#/components/schemas/BookingStatus"
+        customer_name:
+          type: string
+        resource_name:
+          type: string
+        unit:
+          $ref: "#/components/schemas/UnitRef"
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+
+    Dashboard:
+      type: object
+      required: [overdue, unsettled_deposits, today_pickups, today_returns, invoices,
+                 onboarding, revenue_this_month, failed_jobs]
+      properties:
+        overdue:
+          type: array
+          description: Sedang disewa dan lewat `end_at` (BR-041).
+          items:
+            $ref: "#/components/schemas/BookingBrief"
+        unsettled_deposits:
+          type: array
+          description: Sudah kembali, berdeposit, belum diselesaikan dan tidak dibebaskan (BR-049).
+          items:
+            $ref: "#/components/schemas/BookingBrief"
+        today_pickups:
+          type: array
+          description: Dipesan dan mulai hari ini (WIB).
+          items:
+            $ref: "#/components/schemas/BookingBrief"
+        today_returns:
+          type: array
+          description: Sedang disewa dan seharusnya kembali hari ini (WIB).
+          items:
+            $ref: "#/components/schemas/BookingBrief"
+        invoices:
+          type: object
+          required: [unpaid_count, overdue_count, outstanding]
+          properties:
+            unpaid_count:
+              type: integer
+            overdue_count:
+              type: integer
+            outstanding:
+              type: integer
+              format: int64
+              description: Total tagihan yang belum dibayar — piutang, bukan pemasukan.
+        onboarding:
+          type: object
+          description: Dihitung dari data, bukan kolom progres (BR-005).
+          required: [has_resource, has_unit, has_booking]
+          properties:
+            has_resource:
+              type: boolean
+            has_unit:
+              type: boolean
+            has_booking:
+              type: boolean
+        revenue_this_month:
+          type: [integer, "null"]
+          format: int64
+          description: Basis kas, bulan berjalan (WIB). `null` untuk operator (BR-003).
+        failed_jobs:
+          description: Dead-letter job runner (BR-072, BR-091). `null` untuk operator.
+          oneOf:
+            - type: array
+              items:
+                $ref: "#/components/schemas/FailedJob"
+            - type: "null"
+
+    FailedJob:
+      type: object
+      required: [type, error, attempt, failed_at]
+      properties:
+        type:
+          type: string
+          examples: ["report.export"]
+        error:
+          type: string
+        attempt:
+          type: integer
+        failed_at:
+          type: string
+          format: date-time
+
+    RevenueReport:
+      type: object
+      required: [from, to, revenue, deposit_held]
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        revenue:
+          type: object
+          required: [rent, late_fee, damage, discount, total]
+          properties:
+            rent:
+              type: integer
+              format: int64
+            late_fee:
+              type: integer
+              format: int64
+            damage:
+              type: integer
+              format: int64
+            discount:
+              type: integer
+              format: int64
+              description: Negatif atau nol.
+            total:
+              type: integer
+              format: int64
+        deposit_held:
+          type: object
+          description: Saldo titipan — bukan pemasukan (BR-050).
+          required: [in, returned, balance]
+          properties:
+            in:
+              type: integer
+              format: int64
+            returned:
+              type: integer
+              format: int64
+            balance:
+              type: integer
+              format: int64
+
+    UtilizationReport:
+      type: object
+      required: [from, to, data]
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        data:
+          type: array
+          items:
+            type: object
+            required: [unit, resource_name, rented_days, period_days, utilization]
+            properties:
+              unit:
+                $ref: "#/components/schemas/UnitRef"
+              resource_name:
+                type: string
+              rented_days:
+                type: number
+              period_days:
+                type: number
+              utilization:
+                type: number
+                description: 0..1.
+
+    IdleUnitsReport:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            required: [unit, resource_name, last_rented_at, idle_days]
+            properties:
+              unit:
+                $ref: "#/components/schemas/UnitRef"
+              resource_name:
+                type: string
+              last_rented_at:
+                type: [string, "null"]
+                format: date-time
+                description: "`null` = belum pernah disewa."
+              idle_days:
+                type: integer
+
+    ExportRequest:
+      type: object
+      required: [report, from, to, format]
+      properties:
+        report:
+          type: string
+          enum: [revenue, utilization, idle_units, bookings]
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        format:
+          type: string
+          enum: [csv, xlsx]
+
+    Job:
+      type: object
+      required: [id, status, download_url, expires_at, error]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, done, failed]
+        download_url:
+          type: [string, "null"]
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+        error:
           type: [string, "null"]
 
     ErrorCode:

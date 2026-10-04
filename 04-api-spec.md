@@ -980,6 +980,25 @@ sebagai catatan kaki, tapi sebagai dua angka berbeda di respons (BR-050, BR-076)
   "deposit_held": { "in": 4000000, "returned": 3500000, "balance": 500000 } }
 ```
 
+**Diputuskan di M5 (fase A)** — tiga hal yang versi awal bagian ini tidak menyebut:
+
+- **Pemasukan berbasis kas.** Baris invoice yang `paid` dihitung pada `paid_at` di dalam
+  periode. Potongan yang **diserap deposit** (invoice kembali yang dibatalkan saat
+  penyelesaian, M4) dihitung pada `deposit_settled_at`, dialokasikan ke `late_fee` lalu
+  `damage` dengan urutan yang sama dengan penyelesaian — tanpa itu uang yang ditahan dari
+  deposit tidak pernah muncul sebagai pemasukan. `deposit_held.in` = baris deposit yang lunas
+  dalam periode; `returned` = pengembalian yang diselesaikan dalam periode; `balance` = deposit
+  lunas yang belum diselesaikan dan tidak dibebaskan, saat ini.
+- **Pemakaian** = persentase hari periode yang tertutup booking `picked_up`/`returned`/
+  `completed`, dari `start_at` sampai `actual_return_at` (atau `end_at`). **Menganggur** =
+  unit `active` yang sewa terakhirnya berakhir > 30 hari lalu, atau belum pernah disewa dan
+  terdaftar > 30 hari. **Booking terlambat** adalah `GET /bookings?overdue=true` yang sudah ada;
+  jenis ekspor `bookings` mengekspor daftar itu.
+- **`GET /dashboard`**: terlambat, deposit belum diselesaikan, ambil & kembali hari ini, ringkasan
+  invoice belum dibayar, dan daftar onboarding yang dihitung dari data (BR-005). Pemasukan bulan
+  berjalan dan dead-letter job runner (BR-072) **`null` untuk operator** (BR-003). Kegagalan kirim
+  WhatsApp menyusul bersama `S1-054`/`S1-055`, yang ditunda sampai akun Meta siap.
+
 `POST /reports/export` menerima `{ "report": "revenue|utilization|idle_units|bookings",
 "from": "…", "to": "…", "format": "csv|xlsx" }` dan mengembalikan `202` berisi `job_id`.
 Berkasnya dirakit **di luar request** oleh job runner (BR-091) — 12 bulan × 500 unit tidak selesai dalam
@@ -992,7 +1011,9 @@ satu siklus HTTP, dan memaksakannya berarti timeout yang menyalahkan pengguna.
   "download_url": "https://…", "expires_at": "…", "error": null }
 ```
 
-Tautan unduh berumur **15 menit** dan dibuat ulang dengan mengulang permintaan ekspor. Laporan
+Tautan unduh berumur **15 menit** dan ditandatangani ulang setiap kali `GET /jobs/{id}`
+diminta — membuat ulang tautan tidak perlu mengekspor ulang. Status job tinggal di Redis 24 jam;
+job milik usaha lain → `404`. Laporan
 memuat data penyewa; tautan yang tidak kedaluwarsa akan hidup selamanya di riwayat WhatsApp.
 
 Ekspor tetap memisahkan deposit dari pemasukan sebagai kolom berbeda (BR-077) —

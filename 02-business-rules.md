@@ -1090,6 +1090,11 @@ pemakaian per unit, daftar unit menganggur > 30 hari, daftar booking terlambat.
 Angka pemasukan hanya menjumlahkan baris `rent`, `late_fee`, `damage`, dan
 `discount`. Deposit dilaporkan terpisah sebagai saldo titipan. Setara BR-050.
 
+**Basis kas (diputuskan M5):** dihitung saat uangnya diterima — `paid_at` invoice, atau
+`deposit_settled_at` untuk potongan yang diserap deposit (dialokasikan ke `late_fee` lalu
+`damage`). Invoice yang terbit tapi belum dibayar bukan pemasukan; ia piutang, dan tampil di
+dashboard sebagai piutang.
+
 ### BR-077 Ekspor laporan **[baru]**
 Setiap laporan di BR-075 bisa diekspor sebagai CSV dan XLSX.
 
