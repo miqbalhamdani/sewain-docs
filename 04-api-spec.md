@@ -665,6 +665,10 @@ enkripsi aplikasi: URL bertanda tangan harus bisa dirender langsung oleh browser
 `?resource_id=` (ketiganya boleh diulang), `?code=` (potongan teks, tanpa membedakan huruf
 besar-kecil), dan `?overdue=true` (kondisi turunan, bukan status — BR-041).
 
+Setiap `Booking` membawa `payment` — ringkasan bayar (`none|unpaid|overdue|paid` +
+`outstanding`), dihitung saat dibaca dari invoice non-`cancelled` miliknya (BR-055),
+tidak disimpan. Satu definisi untuk daftar, detail, dan badge di layar mana pun.
+
 `POST /bookings` (staff → langsung `reserved`):
 
 ```json
@@ -865,6 +869,9 @@ yang pernah diubah.**
 | `GET` | `/invoices/{id}/proofs` | semua | BR-062 |
 | `POST` | `/proofs/{id}/approve` | semua | BR-062 |
 | `POST` | `/proofs/{id}/reject` | semua | BR-062 |
+
+`Invoice` membawa `customer` (penyewa yang ditagih; `null` untuk invoice langganan,
+BR-082) — daftar Tagihan menjawab "punya siapa" tanpa membuka booking-nya.
 
 `POST …/payments` — `{ "method": "cash" | "manual_transfer", "amount": 1200000,
 "paid_at": "…" }`; `amount` wajib sama dengan total (lunas penuh, BR-060), `paid_at`

@@ -3082,7 +3082,8 @@ components:
                  end_at_with_buffer, overdue, unit_price, pricing_unit, buffer_minutes,
                  duration_qty, subtotal, deposit_amount, late_fee_per_unit,
                  cancelled_reason, expires_at, created_at, actual_return_at,
-                 deposit_waived_at, deposit_settled_at, deposit_deducted, deposit_refunded]
+                 deposit_waived_at, deposit_settled_at, deposit_deducted, deposit_refunded,
+                 payment]
       properties:
         deposit_waived_at:
           type: [string, "null"]
@@ -3160,6 +3161,26 @@ components:
         created_at:
           type: string
           format: date-time
+        payment:
+          $ref: "#/components/schemas/BookingPayment"
+
+    BookingPayment:
+      type: object
+      description: |
+        Ringkasan bayar booking ini, **dihitung saat dibaca** — seperti `overdue`
+        (BR-041) dan total invoice (BR-055), tidak pernah disimpan. Invoice
+        `cancelled` diabaikan; `gateway_pending` terhitung belum bayar — uang yang
+        belum terkonfirmasi bukan uang. Booking `draft`/`cancelled`/`no_show`,
+        atau tanpa invoice aktif → `none`.
+      required: [status, outstanding]
+      properties:
+        status:
+          type: string
+          enum: [none, unpaid, overdue, paid]
+        outstanding:
+          type: integer
+          format: int64
+          description: SUM baris dari invoice berstatus belum lunas. 0 kalau tidak ada.
 
     BookingCustomer:
       type: object
@@ -3540,7 +3561,7 @@ components:
 
     Invoice:
       type: object
-      required: [id, booking_id, number, status, due_at, paid_at, total, lines, created_at]
+      required: [id, booking_id, number, status, due_at, paid_at, total, lines, created_at, customer]
       properties:
         id:
           type: string
@@ -3551,6 +3572,13 @@ components:
         number:
           type: string
           examples: ["SWN-0042/1"]
+        customer:
+          description: |
+            Penyewa yang ditagih — supaya daftar Tagihan bisa menagih tanpa membuka
+            booking-nya. `null` hanya untuk invoice langganan (BR-082), belum ada di fase 1.
+          oneOf:
+            - $ref: "#/components/schemas/BookingCustomer"
+            - type: "null"
         status:
           $ref: "#/components/schemas/InvoiceStatus"
         due_at:

@@ -752,7 +752,7 @@ Default: nonaktif. Banyak rental menerima pembayaran saat pengambilan, dan
 memaksakan sebaliknya bikin produk ini nggak kepakai.
 
 Sakelar ini juga menentukan **apa yang terjadi saat tenggat bayar lewat** (BR-057):
-menyala → booking yang belum lunas dibatalkan; mati → cuma invoicenya yang ditandai
+menyala → booking yang belum lunas dibatalkan beserta invoice-nya; mati → cuma invoicenya yang ditandai
 `overdue`, dan batasnya pindah ke `no_show`.
 
 ### BR-040 Waktu kembali sebenarnya **[baru]**
@@ -933,12 +933,17 @@ sakelarnya tetap berarti:
 
 | `require_payment_before_pickup` | Lewat `due_at`, belum lunas |
 |---|---|
-| **`true`** | Invoice → `overdue`, **booking → `cancelled`** dengan alasan `payment_expired`, unit langsung bebas |
+| **`true`** | **Booking → `cancelled`** dengan alasan `payment_expired`, invoice yang belum dibayar ikut `cancelled`, unit langsung bebas |
 | **`false`** (default) | Invoice → `overdue` dan tampil di dashboard. Booking **tidak** dibatalkan — pemilik ini memang menerima pembayaran saat pengambilan |
 
 Pembatalan otomatis aman di jalur pertama justru karena **belum ada uang yang masuk**:
 pemilik yang mewajibkan bayar di muka tidak pernah menyerahkan barang sebelum lunas,
 jadi pertanyaan refund — yang PRD §8 masih menunda ke fase 2 — tidak pernah muncul.
+
+**Pembatalan booking — otomatis maupun manual — membatalkan invoice yang belum
+dibayar.** Booking batal tidak menagih apa pun; yang sudah `paid` tetap tercatat.
+Tanpa ini daftar Tagihan memuat "lewat tenggat" yang tidak akan pernah ditagih,
+karena barangnya tidak pernah diserahkan.
 
 **Booking yang tidak dibatalkan tetap punya batas**, lewat jalur lain: `reserved →
 no_show` saat `now() > start_at + owners.no_show_tolerance_hours` (**default 3**). Tanpa
