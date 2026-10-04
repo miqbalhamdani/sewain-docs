@@ -23,6 +23,9 @@ info:
     `/customers/{id}/identity`, `S1-034`..`S1-036` serah-terima, dan `S1-041` (ditarik
     dari M4) `/invoices` per booking.
 
+    M5 fase B/C: `S1-051` `/public/*`, `S1-053`/`S1-062` `/portal/*` — keduanya di host
+    pemilik, tenant dari `Host` (BR-030) — dan `S1-079` `/api-keys`.
+
     Jadi berkas ini **kurang** dibanding `04-api-spec.md` §3–§8, bukan **bertentangan**
     dengannya. Aturan di `CLAUDE.md` tetap berlaku untuk apa pun yang dijelaskan dua-duanya:
     ubah satu, ubah yang lain, di commit yang sama.
@@ -42,9 +45,20 @@ servers:
       Produksi — backoffice. Domainnya belum dibeli; lihat `05-backlog.md` §M6, `S1-073`.
   - url: http://localhost:8080/api/v1
     description: Development lokal, terhadap layanan host dari `S1-001`.
+  - url: https://{slug}.sewain.id/api/v1
+    description: |
+      Permukaan publik dan portal penyewa (§4, §5). Tenant dari `Host`; hanya `/public/*`
+      dan `/portal/*` yang dilayani di sini. Lokal: `http://{slug}.sewain.localhost:8088`
+      lewat Caddy (`make proxy`).
+    variables:
+      slug:
+        default: rentalbudi
+  - url: https://api.sewain.id/api/v1
+    description: API eksternal (§4.1). Tenant dari `X-API-Key`; hanya empat `/public/*`.
 
 # Setiap endpoint butuh bearer token kecuali ia memilih keluar dengan `security: []`.
 # Yang tanpa autentikasi: login, refresh, register (S1-082), dan verify-email (S1-084) --
+# plus /public/* dan /portal/* (M5), yang tenant-nya dari Host, token portal, atau X-API-Key --
 # empat jalur yang memang harus jalan sebelum ada sesi. Selebihnya butuh token, DAN butuh
 # email terverifikasi (BR-006): gerbangnya satu middleware, bukan atribut per path di sini.
 security:
@@ -2148,6 +2162,301 @@ paths:
           $ref: "#/components/responses/NotFound"
 
 
+  # ── M5 fase B: permukaan publik <slug>.sewain.id (04-api-spec.md §4) ────────────────
+  # Tenant dari `Host` (BR-030), atau dari `X-API-Key` di api.sewain.id (BR-031, §4.1).
+  # Tidak ada segmen slug, tidak ada owner_id di mana pun.
+
+  /public/owner:
+    get:
+      operationId: getPublicOwner
+      summary: Profil usaha pemilik host ini
+      description: |
+        Yang membuat penyewa di katalog kosong tahu harus menghubungi siapa (BR-096,
+        `S1-068`). Host tak dikenal, pemilik `suspended`, dan pemilik yang profilnya belum
+        lengkap (`slug` + `whatsapp` + `address`) dibalas `404` yang **sama persis**.
+      security:
+        - {}
+        - apiKey: []
+      responses:
+        "200":
+          description: Profil usaha.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicOwner"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /public/resources:
+    get:
+      operationId: listPublicResources
+      summary: Katalog publik, dengan ketersediaan kalau rentang diberikan
+      description: |
+        Resource `active` yang punya minimal satu unit `active` (BR-025). Dengan
+        `start_at` + `end_at`, tiap resource membawa `available`, `available_count`,
+        `duration_qty`, dan `subtotal` — dihitung saat diminta, tanpa cache. Tanpa
+        rentang, keempatnya `null`.
+
+        Unit fisik tidak pernah disebut: tanpa kode, tanpa id (BR-025).
+      security:
+        - {}
+        - apiKey: []
+      parameters:
+        - $ref: "#/components/parameters/PublicStartAt"
+        - $ref: "#/components/parameters/PublicEndAt"
+      responses:
+        "200":
+          description: Katalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicResourceList"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /public/resources/{id}:
+    get:
+      operationId: getPublicResource
+      summary: Satu resource, lengkap dengan spek dan syarat sewa
+      description: |
+        Resource milik pemilik lain dibalas `404` yang sama dengan host asing (BR-030).
+        `system_terms` adalah empat kalimat tenggat/denda/no-show yang **dirakit server**
+        dari knob pemilik dan resource ini, tidak pernah dari teks juragan (BR-095).
+      security:
+        - {}
+        - apiKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/PublicStartAt"
+        - $ref: "#/components/parameters/PublicEndAt"
+      responses:
+        "200":
+          description: Resource.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicResourceDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /public/bookings:
+    post:
+      operationId: createPublicBooking
+      summary: Ajukan booking dari halaman publik
+      description: |
+        Membuat booking `draft` dengan `source = 'public_page'` — **tidak mengunci unit**
+        (BR-026). Unit dipilih server dari yang kosong saat ini; tidak ada yang kosong →
+        `409 booking-conflict` dengan `conflicts` **kosong** (booking orang lain tidak pernah
+        disebut). Draft kedaluwarsa sesuai `draft_expiry_hours` (BR-027).
+
+        Penyewa dicocokkan dengan nomor teleponnya (`0…` dibaca `+62…`); yang belum ada
+        dibuat. Penyewa terblokir dibalas `422 customer-blacklisted` dengan pesan netral,
+        tanpa alasan (BR-028). Rate limit 5/jam per IP dan 30/jam per pemilik.
+      security:
+        - {}
+        - apiKey: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublicBookingRequest"
+      responses:
+        "201":
+          description: Pengajuan tercatat, menunggu konfirmasi pemilik.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicBookingCreated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  # ── M5 fase B: portal penyewa <slug>.sewain.id/booking/<token> (§5, BR-002) ─────────
+
+  /portal/bookings/{token}:
+    parameters:
+      - $ref: "#/components/parameters/PortalToken"
+    get:
+      operationId: getPortalBooking
+      summary: Satu booking, dilihat penyewanya
+      description: |
+        Jadwal, tagihan, foto kondisi, status deposit, dan cara bayar — untuk booking
+        yang ditunjuk token itu saja (BR-002). Token di host pemilik lain, token yang
+        diubah, dan booking yang tidak ada dibalas `404` yang sama.
+
+        Tidak memuat kode unit, nama staf, maupun catatan internal.
+      security: []
+      responses:
+        "200":
+          description: Booking.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortalBooking"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /portal/bookings/{token}/uploads:
+    parameters:
+      - $ref: "#/components/parameters/PortalToken"
+    post:
+      operationId: presignPortalUpload
+      summary: Minta URL unggah bukti transfer
+      description: |
+        Presign yang dibatasi token (§5): kuncinya `pending/<owner>/<booking>/<uuid>`, jadi
+        hanya bisa diserahkan ke booking yang sama. Gambar atau PDF, maks 10 MB.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PortalUploadRequest"
+      responses:
+        "201":
+          description: URL unggah dan kuncinya.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresignedUpload"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /portal/bookings/{token}/proofs:
+    parameters:
+      - $ref: "#/components/parameters/PortalToken"
+    post:
+      operationId: uploadPortalProof
+      summary: Serahkan bukti transfer dari portal
+      description: |
+        Jalur yang sama dengan `POST /invoices/{id}/proofs`, untuk invoice milik booking
+        token ini saja (BR-062). **Tidak melunasi apa pun** — staf yang menyetujui. Invoice
+        booking lain atau kunci unggahan booking lain → `404`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PortalProofInput"
+      responses:
+        "202":
+          description: Bukti diterima, menunggu dicek pemilik.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortalProofReceived"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  # ── M5 fase C: kunci API eksternal (BR-031) ────────────────────────────────────────
+
+  /api-keys:
+    get:
+      operationId: listApiKeys
+      summary: Kunci API usaha ini
+      description: |
+        Hanya peran `owner` (`settings:write`). Tidak pernah memuat rahasianya — yang
+        tersimpan cuma hash argon2id dan 8 karakter prefix (BR-031).
+      responses:
+        "200":
+          description: Kunci, terbaru dulu, termasuk yang sudah dicabut.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ApiKey"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createApiKey
+      summary: Terbitkan kunci API
+      description: |
+        **Rahasianya dibalas sekali di respons ini dan tidak pernah bisa dilihat lagi**
+        (BR-031). Kunci hanya membuka empat endpoint `/public/*` di `api.sewain.id`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApiKeyCreate"
+      responses:
+        "201":
+          description: Kunci baru beserta rahasianya — sekali ini saja.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyCreated"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /api-keys/{id}:
+    delete:
+      operationId: revokeApiKey
+      summary: Cabut kunci API
+      description: |
+        **Cabut, bukan hapus** (`revoked_at`): log akses lama harus tetap bisa dijelaskan.
+        Panggilan berikutnya dengan kunci ini dibalas `401 invalid-api-key`. Mencabut yang
+        sudah dicabut tetap `204`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Kunci dicabut.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 components:
 
   securitySchemes:
@@ -2165,6 +2474,15 @@ components:
         Satu pengecualian yang disengaja dan punya syarat: permukaan publik
         `<slug>.sewain.id` menurunkan usahanya dari header `Host`, karena `Host` bukan data
         aplikasi melainkan amplop routing yang sudah disaring proxy. Uraiannya di BR-030.
+
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Kunci API eksternal (BR-031), **hanya** di `api.sewain.id` dan hanya untuk empat
+        `/public/*`. Di `<slug>.sewain.id` header ini diabaikan, dan `Host` diabaikan di
+        `api.sewain.id` — dua jalur, tanpa penyeberangan (BR-032).
 
   parameters:
 
@@ -2220,6 +2538,34 @@ components:
       schema:
         type: string
         format: date-time
+
+    PublicStartAt:
+      name: start_at
+      in: query
+      required: false
+      description: Awal rentang sewa. Berpasangan dengan `end_at`; tanpa keduanya, tanpa ketersediaan.
+      schema:
+        type: string
+        format: date-time
+
+    PublicEndAt:
+      name: end_at
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+
+    PortalToken:
+      name: token
+      in: path
+      required: true
+      description: |
+        Token portal: id booking + HMAC, tidak tersimpan di mana pun (§5). Ia hanya berlaku
+        di host pemiliknya.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]{43}$"
 
   headers:
 
@@ -2414,6 +2760,10 @@ components:
         - whatsapp
         - address
         - operating_hours
+        - bank_name
+        - bank_account_number
+        - bank_account_holder
+        - allowed_origins
       properties:
         slug:
           type: [string, "null"]
@@ -2494,6 +2844,30 @@ components:
             pengecualian, dan memaksanya jadi tujuh baris buka/tutup membuat juragan
             mengisi data yang salah atau tidak mengisi sama sekali (BR-096).
           examples: ["Senin–Sabtu 08.00–20.00, Minggu janjian dulu"]
+        bank_name:
+          type: [string, "null"]
+          maxLength: 50
+          description: Bank tujuan transfer yang tampil di portal penyewa (§5).
+          examples: ["BCA"]
+        bank_account_number:
+          type: [string, "null"]
+          pattern: "^[0-9]{5,20}$"
+          description: Nomor rekening, angka saja. Ditegakkan database.
+          examples: ["1234567890"]
+        bank_account_holder:
+          type: [string, "null"]
+          maxLength: 100
+          examples: ["Budi Santoso"]
+        allowed_origins:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            pattern: "^https?://[^/?#]+$"
+          description: |
+            Origin situs pemilik yang boleh memanggil `api.sewain.id` dari browser (BR-031).
+            Kosong = tidak ada. **Kontrol browser, bukan kontrol keamanan.**
+          examples: [["https://rentalbudi.com"]]
 
     SettingsUpdate:
       type: object
@@ -2549,6 +2923,30 @@ components:
             pengecualian, dan memaksanya jadi tujuh baris buka/tutup membuat juragan
             mengisi data yang salah atau tidak mengisi sama sekali (BR-096).
           examples: ["Senin–Sabtu 08.00–20.00, Minggu janjian dulu"]
+        bank_name:
+          type: [string, "null"]
+          maxLength: 50
+          description: Bank tujuan transfer yang tampil di portal penyewa (§5).
+          examples: ["BCA"]
+        bank_account_number:
+          type: [string, "null"]
+          pattern: "^[0-9]{5,20}$"
+          description: Nomor rekening, angka saja. Ditegakkan database.
+          examples: ["1234567890"]
+        bank_account_holder:
+          type: [string, "null"]
+          maxLength: 100
+          examples: ["Budi Santoso"]
+        allowed_origins:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            pattern: "^https?://[^/?#]+$"
+          description: |
+            Origin situs pemilik yang boleh memanggil `api.sewain.id` dari browser (BR-031).
+            Kosong = tidak ada. **Kontrol browser, bukan kontrol keamanan.**
+          examples: [["https://rentalbudi.com"]]
 
     User:
       type: object
@@ -3276,7 +3674,7 @@ components:
                  duration_qty, subtotal, deposit_amount, late_fee_per_unit,
                  cancelled_reason, expires_at, created_at, actual_return_at,
                  deposit_waived_at, deposit_settled_at, deposit_deducted, deposit_refunded,
-                 payment]
+                 payment, portal_url]
       properties:
         deposit_waived_at:
           type: [string, "null"]
@@ -3356,6 +3754,12 @@ components:
           format: date-time
         payment:
           $ref: "#/components/schemas/BookingPayment"
+        portal_url:
+          type: [string, "null"]
+          format: uri
+          description: |
+            Tautan portal penyewa untuk booking ini (§5), untuk dikirim staf lewat WhatsApp.
+            `null` selama usaha belum punya slug — portal hidup di host pemilik.
 
     BookingPayment:
       type: object
@@ -4175,6 +4579,385 @@ components:
         error:
           type: [string, "null"]
 
+    # ── M5 fase B/C: permukaan publik, portal, kunci API ─────────────────────────────
+
+    PublicOwner:
+      type: object
+      description: |
+        Profil usaha untuk penyewa (BR-096). Tidak memuat `owner_id` maupun slug — host-nya
+        sudah slug itu.
+      required: [name, whatsapp, address, operating_hours]
+      properties:
+        name:
+          type: string
+          examples: ["Rental Budi"]
+        whatsapp:
+          type: string
+          examples: ["+628123456789"]
+        address:
+          type: string
+        operating_hours:
+          type: [string, "null"]
+
+    PublicResource:
+      type: object
+      description: |
+        Satu jenis barang di katalog publik. Ketersediaan di level resource; unit fisik
+        tidak pernah disebut (BR-025). Empat field ketersediaan `null` bila tidak ada
+        rentang di query.
+      required: [id, name, category, pricing_unit, base_price, deposit_amount,
+                 min_duration, max_duration, vehicle, available, available_count,
+                 duration_qty, subtotal]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        category:
+          type: [string, "null"]
+        pricing_unit:
+          $ref: "#/components/schemas/PricingUnit"
+        base_price:
+          type: integer
+          format: int64
+        deposit_amount:
+          type: [integer, "null"]
+          format: int64
+        min_duration:
+          type: [integer, "null"]
+        max_duration:
+          type: [integer, "null"]
+        vehicle:
+          oneOf:
+            - $ref: "#/components/schemas/VehicleSpec"
+            - type: "null"
+        available:
+          type: [boolean, "null"]
+        available_count:
+          type: [integer, "null"]
+          description: Unit yang kosong di rentang itu — jumlahnya saja, bukan unitnya.
+        duration_qty:
+          type: [integer, "null"]
+        subtotal:
+          type: [integer, "null"]
+          format: int64
+
+    PublicResourceList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicResource"
+
+    PublicResourceDetail:
+      description: |
+        `PublicResource` ditambah deskripsi, tiga teks syarat juragan (kosong = tidak
+        ditampilkan), dan `system_terms` yang dirakit server (BR-095).
+      allOf:
+        - $ref: "#/components/schemas/PublicResource"
+        - type: object
+          required: [description, terms_excludes, terms_requirements, terms_cancellation,
+                     late_fee_per_unit, system_terms]
+          properties:
+            description:
+              type: [string, "null"]
+            terms_excludes:
+              type: [string, "null"]
+            terms_requirements:
+              type: [string, "null"]
+            terms_cancellation:
+              type: [string, "null"]
+            late_fee_per_unit:
+              type: [integer, "null"]
+              format: int64
+            system_terms:
+              type: array
+              items:
+                type: string
+              examples: [["1 hari = 24 jam", "Telat kembali dikenakan Rp 100.000 per hari"]]
+
+    PublicBookingRequest:
+      type: object
+      required: [resource_id, start_at, end_at, customer]
+      additionalProperties: false
+      properties:
+        resource_id:
+          type: string
+          format: uuid
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+        customer:
+          type: object
+          required: [name, phone]
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 100
+            phone:
+              type: string
+              pattern: "^(\\+62|0)[0-9]{8,13}$"
+              description: "`0812…` dan `+62812…` dibaca sama."
+
+    PublicBookingCreated:
+      type: object
+      required: [code, status, expires_at, track_url]
+      properties:
+        code:
+          type: string
+          examples: ["SWN-0051"]
+        status:
+          type: string
+          enum: [draft]
+        expires_at:
+          type: string
+          format: date-time
+        track_url:
+          type: string
+          format: uri
+          description: Tautan portal penyewa untuk pengajuan ini (§5).
+
+    PortalBooking:
+      type: object
+      description: |
+        Satu booking, dilihat penyewanya (BR-002). Tanpa kode unit, nama staf, dan catatan
+        internal.
+      required: [code, status, overdue, customer_name, resource_name, start_at, end_at,
+                 actual_return_at, pricing_unit, duration_qty, subtotal, deposit,
+                 invoices, photos, owner]
+      properties:
+        code:
+          type: string
+        status:
+          $ref: "#/components/schemas/BookingStatus"
+        overdue:
+          type: boolean
+        customer_name:
+          type: string
+        resource_name:
+          type: string
+        start_at:
+          type: string
+          format: date-time
+        end_at:
+          type: string
+          format: date-time
+        actual_return_at:
+          type: [string, "null"]
+          format: date-time
+        pricing_unit:
+          $ref: "#/components/schemas/PricingUnit"
+        duration_qty:
+          type: integer
+        subtotal:
+          type: integer
+          format: int64
+        deposit:
+          $ref: "#/components/schemas/PortalDeposit"
+        invoices:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortalInvoice"
+        photos:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortalPhoto"
+        owner:
+          $ref: "#/components/schemas/PortalOwner"
+
+    PortalDeposit:
+      type: object
+      description: |
+        `none` tanpa deposit; `unpaid` belum dibayar; `held` sudah dibayar dan ditahan;
+        `waived` dibebaskan pemilik; `settled` sudah diselesaikan (BR-048–BR-051).
+      required: [state, amount, deducted, refunded]
+      properties:
+        state:
+          type: string
+          enum: [none, unpaid, held, waived, settled]
+        amount:
+          type: [integer, "null"]
+          format: int64
+        deducted:
+          type: [integer, "null"]
+          format: int64
+        refunded:
+          type: [integer, "null"]
+          format: int64
+
+    PortalInvoice:
+      type: object
+      required: [id, number, status, due_at, paid_at, total, lines, proof_pending]
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: string
+        status:
+          $ref: "#/components/schemas/InvoiceStatus"
+        due_at:
+          type: string
+          format: date-time
+        paid_at:
+          type: [string, "null"]
+          format: date-time
+        total:
+          type: integer
+          format: int64
+        lines:
+          type: array
+          items:
+            type: object
+            required: [kind, description, amount]
+            properties:
+              kind:
+                type: string
+              description:
+                type: string
+              amount:
+                type: integer
+                format: int64
+        proof_pending:
+          type: boolean
+          description: Ada bukti yang sudah dikirim dan belum diputuskan staf.
+
+    PortalPhoto:
+      type: object
+      required: [direction, url, taken_at]
+      properties:
+        direction:
+          type: string
+          enum: [pickup, return]
+        url:
+          type: string
+          description: URL bertanda tangan, hidup 1 jam.
+        taken_at:
+          type: string
+          format: date-time
+
+    PortalOwner:
+      type: object
+      required: [name, whatsapp, address, bank]
+      properties:
+        name:
+          type: string
+        whatsapp:
+          type: [string, "null"]
+        address:
+          type: [string, "null"]
+        bank:
+          description: Rekening tujuan transfer; `null` sampai pemilik mengisinya.
+          oneOf:
+            - type: object
+              required: [name, account_number, account_holder]
+              properties:
+                name:
+                  type: string
+                  examples: ["BCA"]
+                account_number:
+                  type: string
+                account_holder:
+                  type: string
+            - type: "null"
+
+    PortalUploadRequest:
+      type: object
+      required: [content_type, bytes]
+      additionalProperties: false
+      properties:
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, image/webp, application/pdf]
+        bytes:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 10485760
+
+    PortalProofInput:
+      type: object
+      required: [invoice_id, object_key]
+      additionalProperties: false
+      properties:
+        invoice_id:
+          type: string
+          format: uuid
+        object_key:
+          type: string
+
+    PortalProofReceived:
+      type: object
+      required: [id, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+
+    ApiKey:
+      type: object
+      description: Kunci API tanpa rahasianya (BR-031).
+      required: [id, name, key_prefix, rate_limit_per_min, last_used_at, revoked_at, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          examples: ["situs rentalbudi.com"]
+        key_prefix:
+          type: string
+          description: 8 karakter pertama sesudah `swn_live_`, untuk mengenali kuncinya.
+          examples: ["a1b2c3d4"]
+        rate_limit_per_min:
+          type: integer
+        last_used_at:
+          type: [string, "null"]
+          format: date-time
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    ApiKeyCreate:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        rate_limit_per_min:
+          type: integer
+          minimum: 1
+          maximum: 600
+          default: 60
+
+    ApiKeyCreated:
+      allOf:
+        - $ref: "#/components/schemas/ApiKey"
+        - type: object
+          required: [secret]
+          properties:
+            secret:
+              type: string
+              description: Kunci utuh. **Hanya di respons ini** — tidak pernah bisa dilihat lagi.
+              examples: ["swn_live_a1b2c3d4…"]
+
     ErrorCode:
       type: string
       description: |
@@ -4214,6 +4997,9 @@ components:
         - invoice-already-paid
         - deposit-already-paid
         - deposit-not-applicable
+        - invalid-api-key
+        - origin-not-allowed
+        - quota-exceeded
 
     ProblemError:
       type: object

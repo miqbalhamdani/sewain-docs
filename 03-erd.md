@@ -56,6 +56,9 @@ erDiagram
         text whatsapp "BR-096, NULL = halaman publik belum bisa hidup; format +62 ditegakkan"
         text address "BR-096, lokasi ambil default"
         text operating_hours "BR-096, teks bebas; jam buka rental penuh pengecualian"
+        text bank_name "portal penyewa: rekening tujuan transfer (M5)"
+        text bank_account_number "angka saja, 5-20 digit"
+        text bank_account_holder
     }
 
     api_keys {
@@ -352,7 +355,7 @@ createdb sewain_scratch && psql sewain_scratch -f docs/03-verify-overlap-constra
 
 **Constraint sisanya punya skripnya sendiri:** `docs/03-verify-constraints.sql` — pola
 sama: **92 `NOTICE OK` constraint plus 6 `NOTICE OK RLS`** yang membuktikan isolasi BR-001.
-Kasusnya 92 untuk 94 constraint: beberapa diuji dari dua arah, dan empat target `UNIQUE (id, owner_id)` diuji lewat FK yang menunjuknya — menolak yang salah **dan**
+Kasusnya 98 untuk 100 constraint: beberapa diuji dari dua arah, dan empat target `UNIQUE (id, owner_id)` diuji lewat FK yang menunjuknya — menolak yang salah **dan**
 menerima yang benar, supaya constraint yang kebablasan ikut ketahuan.
 Yang RLS diuji dari **peran non-superuser**: superuser melewati RLS sepenuhnya, `FORCE`
 sekalipun, jadi mengujinya sebagai diri sendiri akan lulus secara palsu. Tabel di dalamnya sengaja minimal (hanya kolom yang
@@ -422,6 +425,8 @@ END $fn$;
 -- perubahan skema DAN perubahan kontrak.
 --
 -- Tidak akan ada yang ketiga. Menambahnya adalah percakapan, bukan satu baris.
+-- (Percakapannya terjadi di M5: kunci API, di bawah. Ia jalur tanpa-token kedua yang
+-- BR-030 memang sebut, bukan pintu baru.)
 CREATE ROLE auth_lookup NOLOGIN BYPASSRLS;
 GRANT SELECT (id, owner_id, password_hash, status, role, email) ON users          TO auth_lookup;
 GRANT SELECT (id, owner_id, user_id, token_hash, expires_at, revoked_at)
@@ -462,6 +467,46 @@ REVOKE ALL  ON FUNCTION auth_lookup_user(citext)        FROM PUBLIC;
 REVOKE ALL  ON FUNCTION auth_lookup_refresh_token(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION auth_lookup_user(citext)        TO app_user;
 GRANT EXECUTE ON FUNCTION auth_lookup_refresh_token(text) TO app_user;
+
+-- BR-031 (M5 fase C): kunci API eksternal. Ber-RLS seperti tabel bertenant lain, dan
+-- karena itu kunci yang datang ke api.sewain.id harus menembus RLS SEKALI untuk tahu
+-- pemiliknya -- persis masalah login. Yang ketiga, dengan sengaja: BR-030 sudah
+-- menyebut kunci sebagai jalur tanpa-token kedua, jadi ini bukan pintu baru melainkan
+-- engsel pintu yang sudah ada. Tipe baliknya dikunci sama sempitnya: tanpa nama kunci,
+-- tanpa created_by.
+ALTER TABLE owners ADD COLUMN allowed_origins text[] NOT NULL DEFAULT '{}';
+
+CREATE TABLE api_keys (
+  id                 uuid PRIMARY KEY,
+  owner_id           uuid NOT NULL REFERENCES owners (id),
+  name               text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 80),
+  key_prefix         text NOT NULL CHECK (key_prefix ~ '^[a-z0-9]{8}$'),
+  key_hash           text NOT NULL,          -- argon2id; rahasianya tidak pernah disimpan
+  rate_limit_per_min int  NOT NULL DEFAULT 60 CHECK (rate_limit_per_min BETWEEN 1 AND 600),
+  last_used_at       timestamptz,
+  revoked_at         timestamptz,            -- dicabut, tidak dihapus
+  created_by         uuid,
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT api_keys_prefix_unique UNIQUE (key_prefix),
+  CONSTRAINT api_keys_created_by_matches_owner
+    FOREIGN KEY (created_by, owner_id) REFERENCES users (id, owner_id)
+);
+SELECT enable_owner_rls('api_keys');
+
+GRANT SELECT (id, owner_id, key_hash, rate_limit_per_min, revoked_at, key_prefix)
+  ON api_keys TO auth_lookup;
+CREATE FUNCTION auth_lookup_api_key(p_prefix text)
+RETURNS TABLE (id uuid, owner_id uuid, key_hash text, rate_limit_per_min int,
+               revoked_at timestamptz)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT k.id, k.owner_id, k.key_hash, k.rate_limit_per_min, k.revoked_at
+    FROM api_keys k WHERE k.key_prefix = p_prefix;
+$$;
+ALTER FUNCTION auth_lookup_api_key(text) OWNER TO auth_lookup;
+REVOKE ALL  ON FUNCTION auth_lookup_api_key(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION auth_lookup_api_key(text) TO app_user;
 
 -- BR-001: handover_photos ikut ber-RLS seperti tabel bertenant lain. Ia sempat
 -- terlewat karena dijangkau lewat handovers, tapi invoice_lines.handover_photo_id
@@ -690,6 +735,13 @@ ALTER TABLE resources
 ALTER TABLE owners
   ADD CONSTRAINT owners_whatsapp_format
     CHECK (whatsapp IS NULL OR whatsapp ~ '^\+62[0-9]{8,13}$');
+
+-- M5 (S1-062): rekening yang ditampilkan portal penyewa sebagai "cara bayar". Nomor
+-- rekening yang disalin penyewa ke aplikasi bank harus angka saja -- spasi dan titik
+-- dari juragan berakhir sebagai transfer yang gagal.
+ALTER TABLE owners
+  ADD CONSTRAINT owners_bank_account_number_format
+    CHECK (bank_account_number IS NULL OR bank_account_number ~ '^[0-9]{5,20}$');
 
 -- BR-021: rentang harus masuk akal.
 ALTER TABLE bookings
@@ -1089,7 +1141,8 @@ menumpang `invoices` yang sama, tanpa tabel tagihan kedua (BR-082).
 
 > **API eksternal sudah pindah ke fase 1.** `api_keys` dan `owners.allowed_origins`
 > yang dulu diparkir di bagian ini kini ada di diagram §1 dan constraint §3 (BR-031,
-> BR-032). Alasannya berdiri sendiri: skemanya sudah dirancang lengkap di sini, dan
+> BR-032) — DDL-nya, RLS-nya, dan fungsi lookup ketiga `auth_lookup_api_key` ditulis
+> di §3 saat M5 fase C membangunnya. Alasannya berdiri sendiri: skemanya sudah dirancang lengkap di sini, dan
 > ia tidak menambah permukaan kebocoran data — cuma permukaan penyalahgunaan kuota
 > (BR-031). Ia **tidak** lagi bergantung pada rilis paket mana pun; langganan sendiri
 > justru ditunda (BR-080–BR-082).

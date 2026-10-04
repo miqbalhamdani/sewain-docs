@@ -250,8 +250,15 @@ kurang; baris milik usaha lain tidak boleh bisa dibedakan dari baris yang tidak 
 `PATCH /settings` adalah satu-satunya tempat knob pemilik hidup — `slug`,
 `booking_code_prefix`, `require_payment_before_pickup`, `draft_expiry_hours`,
 `payment_due_hours`, `no_show_tolerance_hours`, `allowed_origins`, tiga sakelar
-pengingat, dan **profil usaha** `whatsapp`/`address`/`operating_hours`. Tidak ada satu
+pengingat, **profil usaha** `whatsapp`/`address`/`operating_hours`, dan **rekening
+transfer** `bank_name`/`bank_account_number`/`bank_account_holder`. Tidak ada satu
 pun yang di-hardcode (BR-024, BR-025, BR-027, BR-031, BR-038, BR-057, BR-070, BR-096).
+
+**Rekening transfer** (M5) adalah yang ditampilkan portal penyewa di "cara bayar" (§5) —
+fase 1 tidak punya gateway, jadi tanpa rekening penyewa harus bertanya lewat WhatsApp
+setiap kali. Ketiganya nullable; nomor rekening angka saja (5–20 digit), ditegakkan
+database. `allowed_origins` diatur dari layar kunci API, tapi tetap lewat endpoint ini:
+daftar origin `scheme://host[:port]`, maksimal 20.
 
 **Profil usaha bukan knob, ia identitas** — dan ketiganya nullable karena pendaftaran
 cuma menanyakan empat hal (BR-005). Yang berlaku: **halaman publik tidak hidup sebelum
@@ -1038,13 +1045,24 @@ GET https://rentalbudi.sewain.id/api/v1/public/resources?start_at=…&end_at=…
 ```
 
 ```json
-{ "owner": { "name": "Rental Budi", "whatsapp": "+62…" },
-  "data": [ { "id": "…", "name": "Avanza 2021", "images": ["…"],
+{ "data": [ { "id": "…", "name": "Avanza 2021", "category": "MPV",
               "base_price": 350000, "pricing_unit": "day",
-              "deposit_amount": 500000,
+              "deposit_amount": 500000, "min_duration": 1, "max_duration": 30,
+              "vehicle": { "vehicle_type": "car", "transmission": "manual",
+                           "seats": 7, "fuel": "gasoline" },
               "available": true, "available_count": 2,
-              "min_duration": 1, "max_duration": 30 } ] }
+              "duration_qty": 2, "subtotal": 700000 } ] }
 ```
+
+Tanpa `start_at`/`end_at`, empat field ketersediaan `null`. Profilnya di
+`GET /public/owner`, bukan di sini — halaman memanggil keduanya. Tidak ada `images`:
+resource belum punya foto, dan field yang selalu kosong di kontrak adalah janji palsu.
+
+`GET /public/resources/{id}` menambahkan `description`, tiga teks syarat juragan,
+`late_fee_per_unit`, dan **`system_terms`** — empat kalimat tenggat/denda/no-show yang
+dirakit server dari knob pemilik (BR-095): "1 hari = 24 jam", "Bayar paling lambat X jam"
+(+ "atau booking batal otomatis" bila sakelar bayar-dulu menyala), "Telat kembali
+dikenakan Rp X per hari", "Tidak datang lewat X jam dari jadwal = batal".
 
 `GET /public/owner` membawa profil usahanya, dan ia yang membuat penyewa di katalog
 kosong tahu harus menghubungi siapa (BR-096, `S1-068`):
@@ -1089,7 +1107,31 @@ Empat hal yang membuat endpoint ini aman untuk dibuka ke internet:
 
 Pengajuan tetap dicek terhadap BR-021 (durasi) dan blacklist (BR-028) — tapi
 penyewa terblokir menerima pesan netral "pengajuan tidak dapat diproses, silakan
-hubungi pemilik", bukan alasan blokirnya.
+hubungi pemilik", bukan alasan blokirnya: `422 customer-blacklisted` tanpa `errors`
+dan tanpa alasan.
+
+Penyewa dicocokkan lewat nomor telepon (`0812…` dibaca `+62812…`); nama yang dikirim
+tidak menimpa nama yang sudah tercatat. Unit dipilih server dari yang kosong saat itu —
+draft tetap butuh satu unit, walau tidak menguncinya. Tidak ada yang kosong → `409
+booking-conflict` dengan `conflicts` **kosong**: kode booking penyewa lain tidak pernah
+keluar ke permukaan publik.
+
+#### Jalur, proxy, dan IP klien (`S1-051`)
+
+API menggolongkan setiap request dari `Host`-nya, port dibuang:
+
+| `Host` | Jalur | Yang dilayani | Tenant dari |
+|---|---|---|---|
+| `api.<apex>` | eksternal | empat `/public/*` | `X-API-Key` (§4.1) |
+| `<slug>.<apex>` | tenant | `/public/*`, `/portal/*` | `Host` |
+| lainnya (`app.<apex>`, lokal) | backoffice | semua kecuali `/public/*`, `/portal/*` | token |
+
+Path di luar jalurnya → `404 not-found`, sama dengan host tak dikenal. **Jalur tenant dan
+eksternal wajib membawa `X-Proxy-Secret`** yang ditambahkan Caddy — request dengan `Host`
+palsu yang menembus langsung ke port aplikasi tidak punya header itu dan dibalas `404`
+yang sama (BR-030). Hanya di balik header itu `X-Real-IP` (diisi Caddy dari alamat
+koneksi) dipakai sebagai IP klien untuk rate limit; tanpa proxy, `RemoteAddr`. Lokal:
+`make proxy` di `sewain-api` menjalankan Caddy di `http://<slug>.sewain.localhost:8088`.
 
 ### 4.1 API eksternal — `api.sewain.id` (BR-031, BR-032)
 
@@ -1164,15 +1206,29 @@ penyewa yang melihat `rentalbudi.sewain.id/booking/…` tahu itu miliknya sebelu
 | Method | Path | BR |
 |---|---|---|
 | `GET` | `/portal/bookings/{token}` | BR-002 |
+| `POST` | `/portal/bookings/{token}/uploads` | BR-093 |
 | `POST` | `/portal/bookings/{token}/payment-link` | **[nonaktif]** → §3.8.1 |
 | `POST` | `/portal/bookings/{token}/proofs` | BR-062 |
 
-Unggah bukti dari portal memakai jalur yang sama dengan backoffice (§2.2): penyewa
-meminta presign, `PUT` langsung ke R2, lalu mengirim `object_key`-nya. Token booking yang
-membatasi presign-nya — satu token hanya bisa menandatangani unggahan untuk booking itu.
+**Token** = id booking + HMAC-SHA256(`PORTAL_SECRET`, owner ‖ booking), dipotong 16 byte,
+base64url — 43 karakter, **tidak tersimpan di mana pun**. Tautan yang sama setiap kali
+dibuat, dan ia diverifikasi sesudah `Host` menentukan pemiliknya: token di host pemilik
+lain, token yang diubah, dan booking yang tidak ada dibalas `404` yang sama. Mencabutnya
+berarti mengganti `PORTAL_SECRET` — semua tautan sekaligus. Staf mendapat tautannya di
+`Booking.portal_url` (`null` selama usaha belum punya slug), karena WhatsApp otomatis
+ditunda.
 
-Respons memuat jadwal, rincian invoice, foto kondisi milik booking itu, dan status
-deposit. Tidak memuat data booking lain, katalog, maupun laporan (BR-002).
+Unggah bukti dari portal memakai jalur yang sama dengan backoffice (§2.2): penyewa
+meminta presign lewat `/uploads` (`{content_type, bytes}`, gambar atau PDF ≤ 10 MB), `PUT`
+langsung ke R2, lalu mengirim `{invoice_id, object_key}` ke `/proofs` → `202`. Token
+booking yang membatasi presign-nya: kuncinya `pending/<owner>/<booking>/<uuid>`, dan
+`/proofs` menolak (`404`) kunci di luar prefix booking itu maupun invoice booking lain.
+
+Respons `GET` memuat jadwal, rincian invoice (dengan `proof_pending`), foto kondisi milik
+booking itu, status deposit (`none`/`unpaid`/`held`/`waived`/`settled`), dan pemilik —
+nama, WhatsApp, alamat, dan **rekening transfer** (`bank`, `null` sampai diisi). Tidak
+memuat data booking lain, katalog, laporan, kode unit, nama staf, maupun catatan internal
+(BR-002).
 
 **Di fase 1 portal ini jalur satu arah untuk pembayaran** (§3.8.1): penyewa bisa melihat
 tagihannya dan **mengunggah bukti transfer**, tidak bisa membayar di tempat. Salinan layarnya
