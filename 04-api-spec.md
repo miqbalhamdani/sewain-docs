@@ -430,8 +430,8 @@ membocorkan usaha mana yang ada, sama seperti BR-030 di permukaan publik.
 | Endpoint | Arti |
 |---|---|
 | `POST /users` | Undang `operator` ke **usaha ini**. Email yang sudah dipakai di usaha mana pun ditolak `422` — unik global (BR-004) |
-| `PATCH /users/{id}` | Ubah `role` atau `status`. `email` dan `owner_id` tidak bisa diubah |
-| `DELETE /users/{id}` | `users.status = 'disabled'` — **nonaktifkan, bukan hapus baris.** `created_by` di tabel lain harus tetap bisa dijelaskan |
+| `PATCH /users/{id}` | Ubah `role` atau `status`. `email` dan `owner_id` tidak bisa diubah. Menurunkan **diri sendiri** atau pemilik aktif **terakhir** → `422` (S1-067) |
+| `DELETE /users/{id}` | `users.status = 'disabled'` — **nonaktifkan, bukan hapus baris.** `created_by` di tabel lain harus tetap bisa dijelaskan. Diri sendiri atau pemilik aktif terakhir → `422`; baris pemilik dikunci (`FOR UPDATE`) supaya dua pemilik yang saling menonaktifkan bersamaan tidak sama-sama lolos |
 
 Nol endpoint di sini yang menghapus baris `users`. Menonaktifkan akun membunuh
 sesinya dalam ≤ 15 menit — batasnya TTL access token, bukan sesuatu yang dipaksakan

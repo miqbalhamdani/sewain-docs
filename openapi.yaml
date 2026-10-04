@@ -418,6 +418,9 @@ paths:
 
         Id milik usaha lain dibalas **`404`, bukan `403`** — baris usaha lain tidak bisa
         dibedakan dari baris yang memang tidak ada (BR-001).
+
+        Menurunkan atau menonaktifkan **diri sendiri**, atau pemilik aktif **terakhir**, dibalas
+        `422` — usaha tanpa pemilik aktif tidak bisa lagi mengubah pengaturannya (S1-067).
       requestBody:
         required: true
         content:
@@ -450,6 +453,8 @@ paths:
 
         Sesi yang dicabut mati dalam **≤ 15 menit**, batas TTL access token. Refresh yang
         datang sesudahnya ditolak, jadi tidak ada sesi yang hidup lebih lama dari itu.
+
+        Diri sendiri atau pemilik aktif terakhir → `422` (S1-067).
       responses:
         "204":
           description: Akun nonaktif. Barisnya tetap ada.
@@ -459,6 +464,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
 
   /resources:
     get:
