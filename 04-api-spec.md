@@ -705,6 +705,8 @@ tepat saat status `cancelled` (`bookings_cancelled_reason_valid`).
 
 `POST /bookings/{id}/confirm` menjalankan **ulang** cek bentrok saat itu juga —
 draft tidak pernah menahan unit, jadi konfirmasi bisa gagal dan itu benar (BR-026).
+Invoice pertama (sewa + deposit) terbit di transaksi yang sama, dan `due_at` mulai
+berdetak di sini — draft tidak pernah punya invoice (BR-045, BR-057, PRD §7.5).
 
 ### 3.6 Serah-terima
 

@@ -1222,6 +1222,10 @@ paths:
         draft tidak pernah menahan unit, jadi konfirmasi bisa gagal dan itu benar
         (BR-026). Selain `draft` → `409 booking-conflict` tidak terjadi; yang terjadi
         `422 validation-failed` ber-field `status`.
+
+        Invoice pertama (sewa + deposit) terbit di transaksi yang sama, dan `due_at`
+        mulai berdetak di sini — draft tidak pernah punya invoice (BR-045, BR-057,
+        PRD §7.5).
       responses:
         "200":
           description: Booking sesudah dikonfirmasi.
