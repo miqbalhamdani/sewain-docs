@@ -883,11 +883,20 @@ BEGIN
     n := n+1; RAISE NOTICE 'OK %/98 - pembebasan wajib berasalan', n;
   END;
 
-  -- 33 · ...bertiga lengkap DITERIMA
+  -- 33 · ...bertiga lengkap DITERIMA. Potongan & pengembalian dinolkan di UPDATE
+  -- yang sama: kasus 14 meninggalkan b1 dengan potongan penuh, dan deposit yang
+  -- dibebaskan tidak pernah punya penyelesaian (bookings_deposit_waived_untouched,
+  -- BR-051). Lalu dikembalikan persis ke keadaan kasus 14, karena kasus 80-81 (M4)
+  -- bergantung padanya. Ditemukan CI pertama (S1-069): constraint itu datang di
+  -- M4, kasus ini lebih tua, dan script ini belum pernah dijalankan sesudahnya.
   UPDATE bookings SET deposit_waived_at = now(), deposit_waived_by = u1,
-                      deposit_waiver_reason = 'pelanggan lama, disepakati pemilik'
+                      deposit_waiver_reason = 'pelanggan lama, disepakati pemilik',
+                      deposit_deducted = 0, deposit_refunded = 0
   WHERE id = b1;
   n := n+1; RAISE NOTICE 'OK %/98 - pembebasan lengkap diterima', n;
+  UPDATE bookings SET deposit_waived_at = NULL, deposit_waived_by = NULL,
+                      deposit_waiver_reason = NULL, deposit_deducted = 500000
+  WHERE id = b1;
 
   -- ══ BR-024 · prefix kode booking milik pemilik ══
   -- Kode ini dibacakan lewat telepon. Format dijaga database supaya tidak ada
