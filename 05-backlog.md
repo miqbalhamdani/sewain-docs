@@ -531,9 +531,9 @@ itu tidak boleh terjadi di atas storage yang belum pernah dipulihkan.
 
 | ID | Item | Repo | Depends | Acceptance | Status | Owner |
 |---|---|---|---|---|---|---|
-| S1-069 | CI: lint, test, test-iso, test-race, migrasi di snapshot, drift kontrak | BE | 002 | PR yang merusak salah satunya berwarna merah. **`services: postgres:18` GitHub Actions, bukan docker-in-docker** — sama seperti lokal, test bicara ke PostgreSQL biasa lewat connection string. **`docs/03-verify-overlap-constraint.sql` dan `docs/03-verify-constraints.sql` ikut dijalankan di CI** — constraint yang di-drop seseorang nanti bikin PR merah, bukan ketahuan di produksi | todo | |
-| S1-070 | Playwright: booking → serah-terima → deposit selesai | FE | 048 | Satu siklus penuh lewat di CI | todo | |
-| S1-071 | Playwright: halaman publik → draft → konfirmasi operator | FE | 061 | Termasuk kasus subdomain asing dan draft kedaluwarsa | todo | |
+| S1-069 | CI: lint, test, test-iso, test-race, migrasi di snapshot, drift kontrak | BE | 002 | PR yang merusak salah satunya berwarna merah. **`services: postgres:18` GitHub Actions, bukan docker-in-docker** — sama seperti lokal, test bicara ke PostgreSQL biasa lewat connection string. **`docs/03-verify-overlap-constraint.sql` dan `docs/03-verify-constraints.sql` ikut dijalankan di CI** — constraint yang di-drop seseorang nanti bikin PR merah, bukan ketahuan di produksi | done | Claude |
+| S1-070 | Playwright: booking → serah-terima → deposit selesai | FE | 048 | Satu siklus penuh lewat di CI | done | Claude |
+| S1-071 | Playwright: halaman publik → draft → konfirmasi operator | FE | 061 | Termasuk kasus subdomain asing dan draft kedaluwarsa | done | Claude |
 | S1-072 | Uji perangkat sungguhan untuk alur serah-terima | FE | 037 | Android kelas menengah, jaringan seluler, satu tangan, **< 3 menit** | todo | |
 | S1-073 | VPS, Docker Compose, Caddy, TLS wildcard | OPS | — | `docker compose up` melayani HTTPS di `sewain.id`, `app.`, `api.`, **dan `*.sewain.id`**; wildcard **wajib** lewat DNS-01 token Cloudflare — ACME HTTP-01 tidak bisa menerbitkannya; `/api/*` dirutekan ke service `api`, sisanya ke `web`, **`Host` diteruskan utuh**; **hairpin jalan** — `web` bisa memanggil `https://<slug>.sewain.id/api/…` dari dalam dan sampai balik ke Caddy (BR-030 render sisi server); port `web` dan `api` **tidak** terbuka ke publik — nol `ports:` di kedua service, hanya Caddy yang punya `80:80`/`443:443` (BR-030) | todo | |
 | S1-074 | PostgreSQL 18 + Redis tuned **+ provisioning R2** | OPS | 073 | `shared_buffers` ≈ 25% RAM; `cpus`/`mem_limit` per layanan terisi. **Bucket R2 sungguhan berdiri**: prefix per owner; **CORS bucket mengizinkan `PUT` dari `<slug>.sewain.id` dan `app.sewain.id`** — tanpa ini unggahan browser mati total (BR-093); **lifecycle menghapus `pending/` setelah 24 jam**; kredensial terpisah dari kredensial lokal. **Tidak ada object storage di mesin ini** — objek tinggal di R2, supaya kehilangan mesin tidak berarti kehilangan foto bukti | todo | |
@@ -559,6 +559,24 @@ itu tidak boleh terjadi di atas storage yang belum pernah dipulihkan.
 > **Domain produksi cukup diputuskan sebelum M6**, bukan sebelum proyeknya mulai. Syaratnya satu:
 > **apex domain wajib konfigurasi, bukan konstanta** — `middleware.ts` (pemetaan `Host`→slug) dan
 > Caddy membacanya dari env, sehingga M0–M5 tidak tersandera nama yang belum dibeli.
+
+> **M6 bagian CI + E2E selesai (6 Okt)** -- `S1-069`, `S1-070`, `S1-071`. Docs kini repo publik
+> `miqbalhamdani/sewain-docs`, supaya CI membaca kontrak dan script verifikasi tanpa rahasia.
+> CI di ketiga repo: `sewain-api` (`make check` + migrasi di snapshot + script verifikasi),
+> `sewain-web` (drift kontrak, tipe, lint, build, dan job `e2e` yang menyalakan stack penuh lewat
+> Caddy), `sewain-docs` (script verifikasi). Malam hari untuk drift kontrak.
+>
+> **Yang ditemukan CI pertama, bukan review:** `03-verify-constraints.sql` belum pernah lulus
+> sejak M2 -- FK `audit_logs` menunjuk `users (id, owner_id)` sebelum UNIQUE-nya ada, lalu kasus
+> 33 bertabrakan dengan constraint deposit M4. Keduanya diperbaiki. Dan
+> `03-verify-with-check.sql` **tidak** dijalankan sebagai cek tetap: premisnya keliru di
+> PostgreSQL -- policy `FOR ALL` yang hanya punya `USING` memakai `USING` itu juga sebagai
+> `WITH CHECK`, jadi paruh "bocor"-nya tidak pernah bocor. `WITH CHECK` eksplisit di
+> `enable_owner_rls` tetap tidak salah; alasan di §3 yang perlu ditulis ulang -- keputusan
+> pemilik, belum disentuh.
+>
+> Sisa M6 -- `S1-072` uji perangkat, `S1-073`–`S1-075` VPS / Compose / Caddy TLS / R2 / backup,
+> `S1-076` pilot -- menunggu mesin, domain, akun Cloudflare + R2, dan design partner.
 
 > **`S1-072` tidak bisa diganti emulator.** Angka 3 menit itu diukur di lapangan bareng design
 > partner, bukan di DevTools dengan throttling.
