@@ -377,6 +377,11 @@ ALTER TABLE customers
   ADD CONSTRAINT customers_blacklist_has_reason
     CHECK (is_blacklisted = (blacklist_reason IS NOT NULL));
 
+-- users_id_owner_uq cuma ada sebagai target FK -- id sendiri sudah PK. Ia harus berdiri
+-- SEBELUM FK pertama yang menunjuknya (audit_logs, tepat di bawah): CI pertama
+-- (S1-069) menemukan urutan lama membuat script ini berhenti di sini sejak M2.
+ALTER TABLE users ADD CONSTRAINT users_id_owner_uq UNIQUE (id, owner_id);
+
 -- BR-085. REVOKE di 03-erd.md §3 TIDAK disalin: harness tidak punya app_user,
 -- dan yang dibuktikan di sini constraint, bukan grant. Test Go yang membuktikannya.
 ALTER TABLE audit_logs ADD CONSTRAINT audit_logs_actor_matches_owner
@@ -415,8 +420,6 @@ CREATE UNIQUE INDEX resource_units_code_per_owner
 ALTER TABLE users ADD CONSTRAINT users_email_key UNIQUE (email);
 
 -- BR-004: refresh token tidak bisa menunjuk usaha yang bukan usaha user-nya.
--- users_id_owner_uq cuma ada sebagai target FK di bawah -- id sendiri sudah PK.
-ALTER TABLE users ADD CONSTRAINT users_id_owner_uq UNIQUE (id, owner_id);
 ALTER TABLE api_keys ADD CONSTRAINT api_keys_created_by_matches_owner
   FOREIGN KEY (created_by, owner_id) REFERENCES users (id, owner_id);
 ALTER TABLE refresh_tokens ADD CONSTRAINT refresh_tokens_user_matches_owner
