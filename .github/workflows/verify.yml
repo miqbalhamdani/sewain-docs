@@ -1,0 +1,46 @@
+# The constraints in 03-erd.md section 3, executed -- not just read.  (S1-069)
+#
+# Each verify script builds its own harness in a scratch database,
+# RAISEs on the first case that misbehaves, counts its own passes, and ends in
+# ROLLBACK. Reading the same SQL has missed bugs that running it caught, so a
+# change here that drops or weakens a constraint goes red before any code is
+# generated from it. sewain-api runs the same scripts on every push.
+name: verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-sql:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+    steps:
+      - uses: actions/checkout@v4
+      # The two S1-069 names. 03-verify-with-check.sql is a one-off proof, not a
+      # standing check -- and its premise does not hold on PostgreSQL (a FOR ALL
+      # policy with only USING applies it as WITH CHECK too), so it is not run here.
+      - name: Run the verify scripts, each in its own scratch database
+        run: |
+          for f in 03-verify-constraints.sql 03-verify-overlap-constraint.sql; do
+            db="scratch_$(basename "$f" .sql | tr '-' '_')"
+            createdb "$db"
+            echo "::group::$f"
+            psql -X -v ON_ERROR_STOP=1 -d "$db" -f "$f"
+            echo "::endgroup::"
+          done
