@@ -1,6 +1,6 @@
 # The constraints in 03-erd.md section 3, executed -- not just read.  (S1-069)
 #
-# Each 03-verify-*.sql script builds its own harness in a scratch database,
+# Each verify script builds its own harness in a scratch database,
 # RAISEs on the first case that misbehaves, counts its own passes, and ends in
 # ROLLBACK. Reading the same SQL has missed bugs that running it caught, so a
 # change here that drops or weakens a constraint goes red before any code is
@@ -32,9 +32,12 @@ jobs:
       PGUSER: postgres
     steps:
       - uses: actions/checkout@v4
-      - name: Run every 03-verify-*.sql in its own scratch database
+      # The two S1-069 names. 03-verify-with-check.sql is a one-off proof, not a
+      # standing check -- and its premise does not hold on PostgreSQL (a FOR ALL
+      # policy with only USING applies it as WITH CHECK too), so it is not run here.
+      - name: Run the verify scripts, each in its own scratch database
         run: |
-          for f in 03-verify-*.sql; do
+          for f in 03-verify-constraints.sql 03-verify-overlap-constraint.sql; do
             db="scratch_$(basename "$f" .sql | tr '-' '_')"
             createdb "$db"
             echo "::group::$f"
